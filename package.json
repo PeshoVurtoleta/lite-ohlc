@@ -51,16 +51,18 @@
     "@zakkster/lite-lru": "^1.19.0",
     "@zakkster/lite-viewport": "^1.1.0"
   },
+  "homepage": "https://github.com/PeshoVurtoleta/lite-ohlc#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/zakkster/LiteOhlc.git"
+    "url": "git+https://github.com/PeshoVurtoleta/lite-ohlc.git"
   },
   "bugs": {
-    "url": "https://github.com/zakkster/LiteOhlc/issues"
+    "url": "https://github.com/PeshoVurtoleta/lite-ohlc/issues",
+    "email": "shinikchiev@yahoo.com"
   },
   "funding": {
-    "type": "individual",
-    "url": "https://github.com/sponsors/zakkster"
+    "type": "github",
+    "url": "https://github.com/sponsors/PeshoVurtoleta"
   },
   "publishConfig": {
     "access": "public"
