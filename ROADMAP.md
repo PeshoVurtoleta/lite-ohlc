@@ -14,6 +14,10 @@ Research: https://claude.ai/code/artifact/890fefa2-de01-4f30-8b7e-fbed87d07be2
 - D4 SETTLED: v2 owns its fused 4-lane tree (min low, max high, max vol, sum vol; sums rebuilt
   from children) inside `Ohlc.js`. Zero runtime dependencies. lite-logn `SegmentTree` is a
   devDependency used ONLY as a test oracle; no `queryInto` work in lite-logn.
+- D5 SETTLED (maintainer, 2026-10-21): `decimateInto` keeps two paths (fused-tree per bucket, and
+  a linear scan when visible < B x log2 cap). Times, prices and bucket indices are byte-identical
+  across paths; volume is byte-identical only for integer volumes (fractional: the scan sums
+  sequentially, the tree pairwise). A given query always takes the same path. Documented, not hidden.
 
 ## v2.0 target (from the research doc)
 
