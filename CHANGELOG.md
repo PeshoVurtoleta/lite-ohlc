@@ -6,7 +6,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to
 
 ## [Unreleased]
 
-### Docs
+## [1.0.2] - 2026-10-21
+
+Docs only. `Ohlc.js` code and output are unchanged from 1.0.1 (only the
+`VERSION` string changes).
+
+### Changed
 
 - README: new "Benchmarks (REPORTED)" subsection (headline, full table
   including ties and losses, controls, provenance) and the bench command in
@@ -16,6 +21,19 @@ follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to
   (the 1.0.1 and 1.0.0 entries below keep theirs; true for those releases).
 - Measured numbers come from bench/RESULTS.md (2026-10-21, Apple M4 Pro,
   Node v26.8.2, 1 run x 21 rounds).
+
+### Verified
+
+This cycle, 2026-10-21, Node v26.8.2, macOS Darwin 27, run under the suite
+quiet-lock; `npm run verify` at 1-min load 3.07, exit 0; these gates are GC and
+allocation counts.
+
+- `npm test`: 102 tests, 102 pass.
+- `npm run test:zerobox`: 12 of 12 pass.
+- `npm run torture`: GC major 0, minor 0; 1000 create/drop cycles: tracker
+  size 0, audit empty.
+- The README "Gated numbers" table and the llms.txt gates line still cite the
+  1.0.1 run (load 2.80); the counts are identical.
 
 ## [1.0.1] - 2026-10-21
 

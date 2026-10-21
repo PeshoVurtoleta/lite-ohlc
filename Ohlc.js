@@ -14,7 +14,7 @@
  * MIT (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
  */
 
-export const VERSION = '1.0.1';
+export const VERSION = '1.0.2';
 export const CANDLE_STRIDE = 6;
 export const BOUNDS_STRIDE = 9;
 export const BUCKET_STRIDE = 7;

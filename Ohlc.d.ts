@@ -13,7 +13,7 @@
  */
 
 /** Package version. */
-export declare const VERSION: '1.0.1';
+export declare const VERSION: '1.0.2';
 /** Doubles per candle: [t, o, h, l, c, v]. */
 export declare const CANDLE_STRIDE: 6;
 /** Doubles written by boundsInto: [minLow, maxHigh, maxVol, open, close, sumVol, i0, i1, n]. */
