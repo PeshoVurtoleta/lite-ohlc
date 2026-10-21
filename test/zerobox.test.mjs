@@ -84,15 +84,23 @@ function targetsOf(s) { return [new D1(), new D2(), new D3(), new D4(), s]; }
 // in its window: a zero-alloc lane has none, an allocating lane has bytes > 0.1 or a scavenge.
 async function bytesPerOp(fn, ops = OPS) {
     for (let i = 0; i < WARMUP; i++) fn(i);
-    globalThis.gc();
-    const prof = new GcProfiler().start();
-    const r = measureOps(fn, { ops });
-    await prof.settle();
-    const minor = prof.summary().gc.minor;
-    prof.stop();
-    assert.notEqual(r.source, 'none', 'meter has no memory signal');
-    assert.notEqual(r.bytesPerOp, null, 'bytesPerOp is null (bracket inverted?)');
-    return { bpo: r.bytesPerOp, minor };
+    // An inverted bracket (end anchor below start) is UNMEASURED, never a pass. Measured 2026-10-21,
+    // node 26.8.2: no GC entry in any inverted window; 12/100 runs (gc before start), 2/200 (gc after),
+    // 0/80 with --no-concurrent-recompilation --no-concurrent-osr. Discard and re-measure; 3 of 3 fails.
+    // Raw bracket kept (no stabilize): stabilize reads only the surviving delta, which would blind
+    // the zero lanes to transient allocation and flatten the >= 16 B/op control to ~0.
+    // The forced full GCs count as major, not minor, so the minor === 0 assertion stays meaningful.
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const prof = new GcProfiler().start();
+        globalThis.gc(); globalThis.gc();
+        const r = measureOps(fn, { ops });
+        await prof.settle();
+        const minor = prof.summary().gc.minor;
+        prof.stop();
+        assert.notEqual(r.source, 'none', 'meter has no memory signal');
+        if (r.bytesPerOp !== null) return { bpo: r.bytesPerOp, minor };
+    }
+    assert.fail('bytesPerOp is null in 3 of 3 windows (bracket inverted)');
 }
 function assertZero(name, m) {
     assert.ok(m.bpo <= BUDGET && m.minor === 0, name + ' ' + m.bpo + ' B/op, ' + m.minor + ' scavenges in window');

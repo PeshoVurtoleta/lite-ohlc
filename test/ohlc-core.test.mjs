@@ -494,10 +494,11 @@ test('A8c copyRangeInto: short out -> RangeError before any write', () => {
     assertSame(Array.from(out3.subarray(3)), [0, 1, 2, 3].flatMap((i) => row(T(i), i)), 'records');
 });
 
+// [5,2] (i1 < count, i0 > count) and [3,0]: i0 > i1 must return 0; without that guard n = i1-i0+1 < 0 / <= 0 slips through.
 test('A8c copyRangeInto: invalid range -> 0, nothing written', () => {
     const s = fresh(16);
     for (let i = 0; i < 4; i++) s.appendBar(T(i), ...cand(i));
-    for (const [a, b] of [[-1, 0], [3, 2], [0, 4], [0.5, 1], [NaN, 1], ['0', 1], [0, '1']]) {
+    for (const [a, b] of [[-1, 0], [3, 2], [5, 2], [3, 0], [0, 4], [0.5, 1], [NaN, 1], ['0', 1], [0, '1']]) {
         const out = new Float64Array(24).fill(7.5);
         assert.equal(s.copyRangeInto(a, b, out, 0), 0, '(' + String(a) + ',' + String(b) + ')');
         assert.ok(out.every((x) => x === 7.5), 'untouched');
