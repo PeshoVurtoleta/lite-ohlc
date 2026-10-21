@@ -1,0 +1,162 @@
+# @zakkster/lite-ohlc
+
+Zero-allocation OHLCV candle store for live charts. A power-of-two ring of six
+Float64 columns (t, o, h, l, c, v), a fused 4-lane segment tree (min low, max
+high, max volume, sum volume) over the closed bars, and an O(1) live (forming)
+bar kept outside the tree. It answers "what are the bounds / the decimated
+buckets of this visible range" without scanning the whole history, and takes
+ticks without allocating. Single-file ESM, zero runtime dependencies.
+
+## Status: 1.0.0
+
+## Install and import
+
+    npm install @zakkster/lite-ohlc
+
+    import { OhlcSeries, CANDLE_STRIDE, BOUNDS_STRIDE, BUCKET_STRIDE } from '@zakkster/lite-ohlc';
+
+    const series = new OhlcSeries(4096, 60);      // capacity (power of two), interval
+    const bar = new Float64Array(CANDLE_STRIDE);  // [t, o, h, l, c, v]
+    bar.set([1000, 10, 12, 9, 11, 500]);
+    series.setLiveFrom(bar);                      // forming bar, O(1) per tick
+    bar.set([1060, 11, 13, 11, 12, 300]);
+    series.setLiveFrom(bar);                      // later time: closes 1000, new live bar
+    const bnd = new Float64Array(BOUNDS_STRIDE);
+    series.boundsInto(0, series.count - 1, bnd);
+
+## API (1.0.0)
+
+Named exports: VERSION '1.0.0'; CANDLE_STRIDE 6; BOUNDS_STRIDE 9; BUCKET_STRIDE 7;
+MIN_CAPACITY 2; MAX_CAPACITY 4194304 (2^22); MAX_BUCKETS 1048576 (2^20); class OhlcSeries.
+
+Bars are addressed by LOGICAL index 0..count-1, 0 = oldest. A candle is always
+[t, o, h, l, c, v].
+
+new OhlcSeries(capacity, interval)
+- capacity: integer power of two in [2, 4194304]. interval: finite, > 0, metadata
+  only (never used to validate or align times).
+- TypeError if either is not a number; RangeError if out of range.
+
+Getters (all readonly):
+- version: bumped on every successful write or clear; wraps at 2^30.
+- interval, oldestTime, latestTime: doubles (cold, box once). oldestTime and
+  latestTime are NaN when empty.
+- capacity, count (closed + live, 0..capacity), hasLive.
+
+Writes (all return this; hot = reads a caller-owned Float64Array, zero alloc):
+- appendBarFrom(buf, off = 0): append a CLOSED bar from buf[off..off+5].
+- setLiveFrom(buf, off = 0): set the LIVE bar from buf[off..off+5].
+- appendBar(t, o, h, l, c, v), setLive(t, o, h, l, c, v): cold scalar wrappers, all
+  six required (TypeError if any is not a number).
+- clear(): O(1), forgets every bar including the live one, bumps version.
+
+Searches (hot, binary search, O(log n); return a logical index or -1):
+- lowerBoundFrom(buf, off = 0): first index with time >= buf[off].
+- upperBoundFrom(buf, off = 0): LAST index with time <= buf[off].
+- lowerBound(x), upperBound(x): cold scalar forms; non-number or non-finite x -> -1.
+- -1 also means: series empty, or no bar qualifies. buf[off] must satisfy
+  0 <= off < buf.length (RangeError otherwise).
+
+Range queries (i0, i1 inclusive logical indices; the live bar is included):
+- boundsInto(i0, i1, out, off = 0) -> n. Writes 9 doubles:
+  [minLow, maxHigh, maxVol, open(i0), close(i1), sumVol, i0, i1, n].
+  Returns n = i1 - i0 + 1. Invalid range (non-integer, i0 < 0, i0 > i1, i1 >= count)
+  writes [NaN, NaN, NaN, NaN, NaN, 0, -1, -1, 0] and returns 0. Needs
+  off + 9 <= out.length (RangeError, even for an invalid range).
+- copyRangeInto(i0, i1, out, off = 0) -> n. Writes 6 doubles per bar
+  [t, o, h, l, c, v], oldest first. Invalid range -> 0, nothing written. Valid
+  range but off + 6 * n > out.length -> RangeError, nothing written.
+- decimateInto(i0, i1, B, out, off = 0) -> buckets written. With n = i1 - i0 + 1,
+  bucket k covers [i0 + ceil(k*n/B), i0 + ceil((k+1)*n/B) - 1]. Each non-empty bucket,
+  ascending k, writes 7 doubles:
+  [t_first, o_first, max h, min l, c_last, sum v, k].
+  Empty buckets (only when n < B) write nothing, so k can skip values. Returns
+  min(n, B). Invalid range -> 0, nothing written. B must be an integer in
+  [1, 1048576] and off + 7 * B <= out.length, else RangeError (even for an invalid
+  range). Slots past off + 7 * written are untouched.
+
+Errors: a wrong container type (buf / out not a Float64Array) is a TypeError; a bad
+offset, bad capacity or interval, invalid candle, out-of-order time or short output is a
+RangeError. Every throw fires before any state write (a byte-identical no-op).
+Queries with a bad VALUE (bad index range, non-finite search key) do not throw:
+they return 0 or -1.
+
+## Last-bar rule (time ordering)
+
+Times are compared only against the NEWEST bar. Equal time replaces it; a later time
+appends (closing any live bar as-is); an earlier time throws RangeError. There are
+no mid-history edits and no out-of-order inserts.
+- appendBarFrom, equal time: the newest bar is replaced and is CLOSED (a live bar
+  becomes closed).
+- setLiveFrom, equal time: the newest bar is overwritten and is LIVE (a closed
+  newest bar reopens).
+- Later time: any live bar is closed unchanged, the new bar is pushed; when the
+  ring is full the oldest bar is evicted first.
+- Empty series: any time is accepted.
+
+## Validation rule (every write)
+
+All six values must be finite (NaN and +-Infinity rejected), l <= o <= h,
+l <= c <= h, and 0 <= v <= Number.MAX_VALUE / (4 * capacity) (the cap keeps the
+volume sums finite). Failure is RangeError. A -0 is stored as +0. Time is any
+finite double (no interval alignment).
+
+## Decimation paths (settled, ROADMAP D5)
+
+decimateInto keeps two paths: when n < B * log2(capacity) it scans linearly,
+otherwise it runs one fused tree query per bucket. A given query always takes the
+same path. t, o, h, l, c and k are byte-identical across the two paths. Volume
+(sum v) is byte-identical for integer volumes whose sums stay below 2^53; otherwise
+(fractional volumes, or integer sums at or past 2^53) the scan sums sequentially and
+the tree pairwise, so the last bits can differ.
+
+## Zero-GC and complexity
+
+- Complexity is algorithmic, by construction (not benchmarked): setLiveFrom O(1) for
+  a same-time update (a new later bar closes the previous live bar: one O(log n)
+  tree walk); appendBarFrom O(log n); lowerBound / upperBound O(log n); boundsInto
+  O(log n); decimateInto O(B log capacity) on the tree path, O(n + B) on the scan path;
+  copyRangeInto O(n); clear O(1).
+- The *From methods, the searches, boundsInto, copyRangeInto, decimateInto and the
+  integer getters never allocate. Numeric return values are small integers; the writes return this.
+- The scalar wrappers (appendBar, setLive, lowerBound, upperBound) box each
+  fractional or large argument (up to six per appendBar / setLive call), and the
+  double getters (interval, oldestTime, latestTime) box their result once per read;
+  use the
+  *From forms and a preallocated Float64Array in a frame loop.
+- Gates (run log 2026-10-21, Node v26.8.2, macOS, load 2.3-3.0, quiet-lock):
+  npm test 95/95; zerobox 10/10 (gate threshold <= 0.1 B/op); torture with 1e6
+  setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto + 1e5 decimateInto -> GC major 0,
+  minor 0; retention 1000 cycles -> 0 retained; a 30-run zerobox loop -> 0 fails.
+  No timing or throughput figures are published.
+
+## Gotchas
+
+- count includes the live bar. Closed bars = count - (hasLive ? 1 : 0). count never
+  exceeds capacity; a full ring evicts the oldest bar on every new later time.
+- Logical indices shift when the oldest bar is evicted: an index held across a write
+  may refer to a different bar. Compare `version` to detect changes.
+- version wraps at 2^30; compare for equality, not ordering.
+- The live bar is outside the tree and is folded into bounds / decimate in O(1); the
+  tree covers closed bars only. clear() does not reset the tree (stale leaves are
+  unreachable).
+- A reopened bar (setLiveFrom at the same time as a closed newest bar) is simply live
+  again; count is unchanged and no other bar moves; the bar takes the new values.
+- Pass a Float64Array exactly: a Float32Array or plain array throws TypeError.
+- interval is metadata. Nothing checks that times step by interval.
+
+## Composability
+
+Planned duck-typed source contract for @zakkster/lite-charts (no released lite-charts
+version consumes it yet): version, interval, count, oldestTime, latestTime, lowerBound,
+upperBound, boundsInto, decimateInto, copyRangeInto.
+
+## What this is not
+
+No viewport or pan/zoom state, no hit-testing, no object pool, no Fenwick tree or
+other prefix structure, no indicators, no rendering, no resampling of ticks into
+bars, no mid-history edits. Those belong to the caller or to lite-charts.
+
+## License
+
+MIT (c) Zahary Shinikchiev

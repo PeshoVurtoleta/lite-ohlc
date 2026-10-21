@@ -16,8 +16,11 @@ Research: https://claude.ai/code/artifact/890fefa2-de01-4f30-8b7e-fbed87d07be2
   devDependency used ONLY as a test oracle; no `queryInto` work in lite-logn.
 - D5 SETTLED (maintainer, 2026-10-21): `decimateInto` keeps two paths (fused-tree per bucket, and
   a linear scan when visible < B x log2 cap). Times, prices and bucket indices are byte-identical
-  across paths; volume is byte-identical only for integer volumes (fractional: the scan sums
-  sequentially, the tree pairwise). A given query always takes the same path. Documented, not hidden.
+  across paths; volume is byte-identical for integer volumes whose sums stay below 2^53
+  (otherwise -- fractional volumes, or integer sums at or past 2^53 -- the scan sums
+  sequentially, the tree pairwise). A given query always takes the same path. Documented, not
+  hidden. (Bound amended by the maintainer 2026-10-21 per PLAN-v2 addendum 9: integer volumes
+  [2^53, 0, 1, 1] give tree 9007199254740994 vs scan 9007199254740992.)
 
 ## v2.0 target (from the research doc)
 

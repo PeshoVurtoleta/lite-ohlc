@@ -1,7 +1,7 @@
 {
   "name": "@zakkster/lite-ohlc",
   "version": "1.0.0",
-  "description": "Zero-GC, zero-dependency OHLCV bar store: Float64 column ring, O(1) live-bar ticks, O(log n) visible-window bounds and O(B log n) candle decimation.",
+  "description": "Zero-GC, zero-dependency OHLCV bar store: Float64 column ring, O(1) live-bar ticks, O(log n) visible-window bounds and O(B log capacity) candle decimation.",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
   "license": "MIT",
   "type": "module",
