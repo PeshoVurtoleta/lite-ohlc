@@ -6,6 +6,37 @@ follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- `decimateInto` scan path is O(n) by construction: for n <= B each non-empty
+  bucket holds one bar, copied directly (bar m -> bucket floor(m * B / n))
+  instead of running the B-bucket loop (1.0.0: O(n + B), i.e. 2^20 iterations
+  for n = 1, B = MAX_BUCKETS). Output is byte-identical to 1.0.0, gated bytewise
+  against a frozen 1.0.0 copy (`test/fixtures/Ohlc-v1.0.0.js`, sha256-pinned)
+  over 2000+ cases; a deterministic work-count gate (`Math.floor` calls) fails
+  on 1.0.0. Still two paths, dispatch unchanged (ROADMAP D5). No timing data;
+  no speed claim.
+- `copyRangeInto` starts its loop at `i0 | 0` (as `decimateInto` does), so a
+  caller's -0 never seeds a double loop variable. No output change.
+- Docs: complexity wording, llms.txt wrapping, README gate table, `Ohlc.d.ts`
+  comment alignment.
+
+### Verified
+
+This cycle, 2026-10-21, Node v26.8.2, macOS Darwin 27, run under the suite
+quiet-lock; `npm run verify` at 1-min load 2.80, exit 0; these gates are GC and
+allocation counts.
+
+- `npm test`: 102 tests, 102 pass.
+- `npm run test:zerobox`: 12 of 12 pass (new lanes: `copyRangeInto` with
+  i0 = -0, `decimateInto` sparse path).
+- `npm run torture`: 1e6 `setLiveFrom` + 1e5 `appendBarFrom` + 1e5 `boundsInto`
+  + 1e5 `decimateInto` (scan / tree / sparse lanes): GC major 0, minor 0; 1000
+  create/drop cycles: tracker size 0, audit empty.
+- The 30-run zerobox loop was NOT re-run this cycle (its 0 failures is the
+  1.0.0 result, 10 lanes).
+- No timing or benchmark data exists for this release.
+
 ## [1.0.0] - 2026-10-21
 
 First release of `@zakkster/lite-ohlc`. It is a REWRITE salvaged from the

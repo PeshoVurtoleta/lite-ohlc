@@ -217,7 +217,7 @@ An invalid range (non-integer, `i0 < 0`, `i0 > i1`, or `i1 >= count`) writes `[N
 | 5    | sum volume                         |
 | 6    | bucket index `k`                   |
 
-It returns the number written, `min(n, B)`; empty buckets (only when `n < B`) write nothing, and slots past `off + 7 * written` are untouched. `B` must be an integer in `[1, MAX_BUCKETS]` and `off + 7 * B <= out.length`, otherwise it throws `RangeError` -- even when the range is invalid. An invalid range returns `0` and writes nothing. O(n + B) on the scan path, O(B log capacity) on the tree path, by construction.
+It returns the number written, `min(n, B)`; empty buckets (only when `n < B`) write nothing, and slots past `off + 7 * written` are untouched. `B` must be an integer in `[1, MAX_BUCKETS]` and `off + 7 * B <= out.length`, otherwise it throws `RangeError` -- even when the range is invalid. An invalid range returns `0` and writes nothing. O(n) on the scan path, O(B log capacity) on the tree path, by construction.
 
 ### Constants
 
@@ -316,21 +316,21 @@ All storage is allocated once in the constructor: six column arrays, the tree, a
 
 Every numeric hot return value is a small integer; the writes return the series. The scalar wrappers exist for convenience and as the control of the gate: use the `*From` / `*Into` forms in a frame loop.
 
-Complexity is algorithmic, by construction, and was not benchmarked: `setLiveFrom` O(1) for the new bar, `appendBarFrom` / bounds / searches O(log n), `decimateInto` O(n + B) on the scan path and O(B log capacity) on the tree path.
+Complexity is algorithmic, by construction, and was not benchmarked: `setLiveFrom` O(1) for the new bar, `appendBarFrom` / bounds / searches O(log n), `decimateInto` O(n) on the scan path and O(B log capacity) on the tree path.
 
 ### Gated numbers
 
-Measured 2026-10-21 on Node v26.8.2, macOS (Darwin 27), 1-minute load average 2.3-3.0, under the suite quiet-lock. There is no timing or benchmark data for this package.
+Measured 2026-10-21 on Node v26.8.2, macOS (Darwin 27), under the suite quiet-lock: one `npm run verify` run (exit 0) at 1-minute load average 2.80, except the 30-run zerobox row, which is the 1.0.0 run (not repeated for 1.0.1). There is no timing or benchmark data for this package.
 
-| Gate                                                              | Result                                                      |
-| ----------------------------------------------------------------- | ----------------------------------------------------------- |
-| `npm test`                                                        | 95 tests, 95 pass                                           |
-| `npm run test:zerobox`                                            | 10 of 10 pass                                               |
-| zerobox thresholds                                                | each gated hot method at `<= 0.1 B/op` (clear / capacity / hasLive are zero by construction, not gated)                      |
-| zerobox control                                                   | scalar `setLive` with fractional args boxes `>= 16 B/op`    |
-| zerobox, 30 consecutive runs                                      | 0 failures                                                  |
-| torture GC window: 1e6 `setLiveFrom` + 1e5 `appendBarFrom` + 1e5 `boundsInto` + 1e5 `decimateInto` | GC major 0, minor 0 |
-| torture retention: 1000 create/drop cycles                        | tracker size 0, audit empty                                 |
+| Gate                                                                                                                            | Result                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `npm test`                                                                                                                      | 102 tests, 102 pass                                                                                     |
+| `npm run test:zerobox`                                                                                                          | 12 of 12 pass                                                                                           |
+| zerobox thresholds                                                                                                              | each gated hot method at `<= 0.1 B/op` (clear / capacity / hasLive are zero by construction, not gated) |
+| zerobox control                                                                                                                 | scalar `setLive` with fractional args boxes `>= 16 B/op`                                                |
+| zerobox, 30 consecutive runs                                                                                                    | 0 failures (1.0.0 run, 10 lanes; not re-run for 1.0.1)                                                  |
+| torture GC window: 1e6 `setLiveFrom` + 1e5 `appendBarFrom` + 1e5 `boundsInto` + 1e5 `decimateInto` (scan / tree / sparse lanes) | GC major 0, minor 0                                                                                     |
+| torture retention: 1000 create/drop cycles                                                                                      | tracker size 0, audit empty                                                                             |
 
 The zerobox thresholds are limits, not measured B/op values; the control proves the gate can fail.
 
@@ -354,10 +354,10 @@ The zerobox thresholds are limits, not measured B/op values; the control proves 
 
 ## Testing
 
-**95 tests, all pass** (`npm test`), plus the zerobox allocation gate and a torture gate (numbers above).
+**102 tests, all pass** (`npm test`), plus the zerobox allocation gate and a torture gate (numbers above).
 
 ```bash
-npm test             # node:test: core, oracle, parity, decimate, qa boundaries, B0 gates
+npm test             # node:test: core, oracle, parity, decimate, qa boundaries, B0 gates, 1.0.0 fast-path parity + work count
 npm run test:zerobox # --expose-gc: <= 0.1 B/op per hot method, with a boxing control
 npm run torture      # lite-leak + lite-gc-profiler: GC window and retention
 npm run verify       # test + zerobox + torture

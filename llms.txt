@@ -115,20 +115,21 @@ the tree pairwise, so the last bits can differ.
 - Complexity is algorithmic, by construction (not benchmarked): setLiveFrom O(1) for
   a same-time update (a new later bar closes the previous live bar: one O(log n)
   tree walk); appendBarFrom O(log n); lowerBound / upperBound O(log n); boundsInto
-  O(log n); decimateInto O(B log capacity) on the tree path, O(n + B) on the scan path;
+  O(log n); decimateInto O(B log capacity) on the tree path, O(n) on the scan path;
   copyRangeInto O(n); clear O(1).
 - The *From methods, the searches, boundsInto, copyRangeInto, decimateInto and the
-  integer getters never allocate. Numeric return values are small integers; the writes return this.
+  integer getters never allocate. Numeric return values are small integers; the
+  writes return this.
 - The scalar wrappers (appendBar, setLive, lowerBound, upperBound) box each
   fractional or large argument (up to six per appendBar / setLive call), and the
   double getters (interval, oldestTime, latestTime) box their result once per read;
-  use the
-  *From forms and a preallocated Float64Array in a frame loop.
-- Gates (run log 2026-10-21, Node v26.8.2, macOS, load 2.3-3.0, quiet-lock):
-  npm test 95/95; zerobox 10/10 (gate threshold <= 0.1 B/op); torture with 1e6
-  setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto + 1e5 decimateInto -> GC major 0,
-  minor 0; retention 1000 cycles -> 0 retained; a 30-run zerobox loop -> 0 fails.
-  No timing or throughput figures are published.
+  use the *From forms and a preallocated Float64Array in a frame loop.
+- Gates (run log 2026-10-21, Node v26.8.2, macOS, load 2.80, quiet-lock, npm run
+  verify exit 0): npm test 102/102; zerobox 12/12 (gate threshold <= 0.1 B/op);
+  torture with 1e6 setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto + 1e5
+  decimateInto (scan / tree / sparse lanes) -> GC major 0, minor 0; retention 1000
+  cycles -> 0 retained. A 30-run zerobox loop -> 0 fails was a 1.0.0 run (10 lanes;
+  not re-run for 1.0.1). No timing or throughput figures are published.
 
 ## Gotchas
 
