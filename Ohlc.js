@@ -56,6 +56,9 @@ function failCandle() {
         'l <= c <= h, 0 <= v <= MAX_VALUE / (4 * capacity)');
 }
 function failOrder() { throw new RangeError('[lite-ohlc] time is earlier than the last bar'); }
+function failBuckets() {
+    throw new RangeError('[lite-ohlc] B must be an integer in [1, ' + MAX_BUCKETS + ']');
+}
 
 export class OhlcSeries {
     /**
@@ -475,8 +478,8 @@ export class OhlcSeries {
         out[off + 3] = this._o[(base + i0) & mask];
         out[off + 4] = this._c[(base + i1) & mask];
         out[off + 5] = f[F_Q + 3];
-        out[off + 6] = i0;
-        out[off + 7] = i1;
+        out[off + 6] = i0 + 0; // i0 = -0 passes the integer test; write +0
+        out[off + 7] = i1 + 0;
         out[off + 8] = i1 - i0 + 1;
         return i1 - i0 + 1;
     }
@@ -513,5 +516,124 @@ export class OhlcSeries {
             d += 6;
         }
         return n;
+    }
+
+    /**
+     * Decimate the logical range [i0, i1] into at most B buckets. n = i1 - i0 + 1; bucket k
+     * covers [i0 + ceil(k*n/B), i0 + ceil((k+1)*n/B) - 1]. Each non-empty bucket, ascending k,
+     * writes [t_first, o_first, max h, min l, c_last, sum v, k] (BUCKET_STRIDE = 7); empty
+     * buckets (only when n < B) write nothing. Returns the number written (= min(n, B)); slots
+     * past off + 7 * written are untouched. B outside [1, MAX_BUCKETS] or off + 7 * B > length
+     * throws RangeError, even for an invalid range. An invalid range returns 0, writes nothing.
+     * Path: n < B * log2(capacity) -> linear scan (v summed sequentially), else one fused tree
+     * query per bucket (v == boundsInto(s_k, e_k)[5]). t, o, h, l, c, k are byte-identical
+     * across paths; v is byte-identical only for integer volumes.
+     */
+    decimateInto(i0, i1, B, out, off = 0) {
+        if (!(out instanceof Float64Array)) failOut();
+        if ((off | 0) !== off || off < 0) failOff();
+        if ((B | 0) !== B || B < 1 || B > MAX_BUCKETS) failBuckets();
+        if (off + 7 * B > out.length) failOutShort();
+        const s = this._s;
+        if ((i0 | 0) !== i0 || (i1 | 0) !== i1 || i0 < 0 || i0 > i1 ||
+            i1 >= s[S_CLOSED] + s[S_LIVE]) return 0;
+        // `| 0` keeps a -0 index out of the internal calls (SMI args only).
+        if (i1 - i0 + 1 < B * s[S_H]) return this._decimateScan(i0 | 0, i1 | 0, B, out, off);
+        return this._decimateTree(i0 | 0, i1 | 0, B, out, off);
+    }
+
+    /** Linear-scan decimation over validated args. Bars fold in logical order; v summed sequentially. */
+    _decimateScan(i0, i1, B, out, off) {
+        const s = this._s;
+        const base = s[S_BASE];
+        const mask = this._mask;
+        const tc = this._t;
+        const oc = this._o;
+        const hc = this._h;
+        const lc = this._l;
+        const cc = this._c;
+        const vc = this._v;
+        const n = i1 - i0 + 1;
+        let a = i0; // first bar of bucket k
+        let d = off;
+        let w = 0;
+        for (let k = 0; k < B; k++) {
+            const e = i0 + (Math.floor(((k + 1) * n + B - 1) / B) | 0) - 1; // last bar of bucket k
+            if (e >= a) {
+                let p = (base + a) & mask;
+                let mx = hc[p];
+                let mn = lc[p];
+                let sm = vc[p]; // canonical +0 or positive: the sum never reads -0
+                out[d] = tc[p];
+                out[d + 1] = oc[p];
+                for (let i = a + 1; i <= e; i++) {
+                    p = (base + i) & mask;
+                    let x = hc[p]; if (x > mx) mx = x;
+                    x = lc[p]; if (x < mn) mn = x;
+                    sm += vc[p];
+                }
+                out[d + 2] = mx;
+                out[d + 3] = mn;
+                out[d + 4] = cc[p];
+                out[d + 5] = sm;
+                out[d + 6] = k + 0;
+                d += 7;
+                w++;
+            }
+            a = e + 1;
+        }
+        return w;
+    }
+
+    /**
+     * Tree decimation over validated args: per bucket, one _rangeQ over its closed part plus the
+     * O(1) live-bar fold -- the exact boundsInto fold, so v == boundsInto(s_k, e_k)[5].
+     */
+    _decimateTree(i0, i1, B, out, off) {
+        const s = this._s;
+        const C = s[S_CLOSED];
+        const base = s[S_BASE];
+        const mask = this._mask;
+        const f = this._f;
+        const n = i1 - i0 + 1;
+        let a = i0; // first bar of bucket k
+        let d = off;
+        let w = 0;
+        for (let k = 0; k < B; k++) {
+            const e = i0 + (Math.floor(((k + 1) * n + B - 1) / B) | 0) - 1; // last bar of bucket k
+            if (e >= a) {
+                // The tree covers closed bars only: e == C is the live bar, folded below. A
+                // bucket holding only the live bar skips the tree (no sentinel reaches out).
+                const te = e === C ? e - 1 : e;
+                if (te >= a) {
+                    this._rangeQ(a, te);
+                } else {
+                    f[F_Q] = Infinity;
+                    f[F_Q + 1] = -Infinity;
+                    f[F_Q + 2] = -Infinity;
+                    f[F_Q + 3] = 0;
+                }
+                if (te !== e) {
+                    const pl = (base + e) & mask;
+                    let x = this._l[pl];
+                    if (x < f[F_Q]) f[F_Q] = x;
+                    x = this._h[pl];
+                    if (x > f[F_Q + 1]) f[F_Q + 1] = x;
+                    f[F_Q + 3] = f[F_Q + 3] + this._v[pl];
+                }
+                const pa = (base + a) & mask;
+                out[d] = this._t[pa];
+                out[d + 1] = this._o[pa];
+                out[d + 2] = f[F_Q + 1];
+                out[d + 3] = f[F_Q];
+                out[d + 4] = this._c[(base + e) & mask];
+                out[d + 5] = f[F_Q + 3];
+                out[d + 6] = k + 0;
+                d += 7;
+                w++;
+            }
+            a = e + 1;
+        }
+        return w;
     }
 }

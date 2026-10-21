@@ -31,24 +31,28 @@ class D1 {
     lowerBoundFrom(b, o) { return 13; } upperBoundFrom(b, o) { return 14; }
     boundsInto(i0, i1, out, off) { sink[0] = 15; } copyRangeInto(i0, i1, out, off) { sink[0] = 16; }
     get version() { return 17; } get count() { return 18; }
+    decimateInto(i0, i1, B, out, off) { sink[0] = 19; return 1; }
 }
 class D2 {
     appendBarFrom(b, o) { sink[0] = 20; } setLiveFrom(b, o) { sink[0] = 21; } setLive(t, o, h, l, c, v) { sink[0] = 22; }
     lowerBoundFrom(b, o) { return 23; } upperBoundFrom(b, o) { return 24; }
     boundsInto(i0, i1, out, off) { sink[0] = 25; } copyRangeInto(i0, i1, out, off) { sink[0] = 26; }
     get version() { return 27; } get count() { return 28; }
+    decimateInto(i0, i1, B, out, off) { sink[0] = 29; return 1; }
 }
 class D3 {
     appendBarFrom(b, o) { sink[0] = 30; } setLiveFrom(b, o) { sink[0] = 31; } setLive(t, o, h, l, c, v) { sink[0] = 32; }
     lowerBoundFrom(b, o) { return 33; } upperBoundFrom(b, o) { return 34; }
     boundsInto(i0, i1, out, off) { sink[0] = 35; } copyRangeInto(i0, i1, out, off) { sink[0] = 36; }
     get version() { return 37; } get count() { return 38; }
+    decimateInto(i0, i1, B, out, off) { sink[0] = 39; return 1; }
 }
 class D4 {
     appendBarFrom(b, o) { sink[0] = 40; } setLiveFrom(b, o) { sink[0] = 41; } setLive(t, o, h, l, c, v) { sink[0] = 42; }
     lowerBoundFrom(b, o) { return 43; } upperBoundFrom(b, o) { return 44; }
     boundsInto(i0, i1, out, off) { sink[0] = 45; } copyRangeInto(i0, i1, out, off) { sink[0] = 46; }
     get version() { return 47; } get count() { return 48; }
+    decimateInto(i0, i1, B, out, off) { sink[0] = 49; return 1; }
 }
 
 function mAppend(t, b, o) { t.appendBarFrom(b, o); }
@@ -60,7 +64,7 @@ function mCopy(t, i0, i1, out, o) { t.copyRangeInto(i0, i1, out, o); }
 function mVersion(t) { return t.version; }
 function mCount(t) { return t.count; }
 function mSetLive(t, ti, o, h, l, c, v) { t.setLive(ti, o, h, l, c, v); }
-// H3: add decimateInto lanes here once B2a lands (both paths, A13).
+function mDecimate(t, i0, i1, B, out, o) { return t.decimateInto(i0, i1, B, out, o); }
 
 // Candle layout [t,o,h,l,c,v]; o,h,l,c,v fractional, valid (l <= o,c <= h).
 function makeSeries() {
@@ -167,6 +171,31 @@ test('zerobox: copyRangeInto is <= 0.1 B/op (stride-6 output)', async () => {
     });
     assertZero('copyRangeInto', bpo);
 });
+
+// decimateInto lanes. Path rule (S7): H = log2(CAP) = 16; n = i1-i0+1 < B*H -> scan, else tree.
+// SCAN: B = 20 -> B*H = 320; n = 200 < 320.  TREE: B = 20; n = 2000 >= 320.  Guards below assert both.
+const DEC_B = 20;
+function decimateLane(name, n) {
+    test('zerobox: decimateInto is <= 0.1 B/op (' + name + ' path, fractional volumes, wrapped ring + live bar)', async () => {
+        requireHarness();
+        assert.ok(name === 'scan' ? n < DEC_B * 16 : n >= DEC_B * 16, 'lane picks the ' + name + ' path by the H rule');
+        const s = makeSeries();
+        const b = new Float64Array([EPOCH_BASE + CAP * 1000, 10.5, 20.25, 5.75, 15.5, 100.5]);
+        for (let k = 0; k < 777; k++) { s.appendBarFrom(b, 0); b[0] += 1000; } // base moves: ranges wrap
+        s.setLiveFrom(b, 0);
+        assert.ok(s.hasLive && s.count === CAP);
+        const targets = targetsOf(s);
+        const out = new Float64Array(7 * DEC_B);
+        const bpo = await bytesPerOp((i) => {
+            const i0 = (i * 31) & 16383;
+            if ((i & 1) === 0) sink[0] = mDecimate(targets[i % 5], i0, i0 + n - 1, DEC_B, out, 0);
+            else sink[0] = mDecimate(targets[i % 5], CAP - n, CAP - 1, DEC_B, out, 0); // ends at the live bar
+        });
+        assertZero('decimateInto ' + name, bpo);
+    });
+}
+decimateLane('scan', 200);
+decimateLane('tree', 2000);
 
 test('zerobox: version and count getters are <= 0.1 B/op', async () => {
     requireHarness();

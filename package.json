@@ -29,7 +29,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/ohlc-*.test.mjs test/b0-drift.test.mjs",
+    "test": "node --test test/ohlc-*.test.mjs test/b0-drift.test.mjs test/b0-decimate.test.mjs",
     "test:zerobox": "node --expose-gc --min-semi-space-size=4 --max-semi-space-size=4 --test test/zerobox.test.mjs",
     "torture": "node --expose-gc --min-semi-space-size=4 --max-semi-space-size=4 test/torture.mjs",
     "verify": "npm test && npm run test:zerobox && npm run torture"

@@ -63,7 +63,9 @@ await check('A14 retention: 1000 cycles, size() === 0 and audit() empty after gc
             if (k >= 1948) s.setLive(EPOCH_BASE + (k + 1) * 60000, 10.5, 20.25, 5.75, 15.5, 100.5);
         }
         s.boundsInto(0, s.count - 1, out, 0);
-        // H3: add decimateInto here once B2a lands (A14).
+        const dec = new Float64Array(7 * 16);
+        s.decimateInto(0, s.count - 1, 16, dec, 0); // tree path (n = 1024 >= 16*10)
+        s.decimateInto(0, 99, 16, dec, 0);          // scan path (n = 100 < 160)
     }
     const before = tracker.size();
     await collect();
@@ -90,14 +92,15 @@ await check('A14 control: one retained series -> size() === 1', async () => {
 });
 
 // ---- A13 zero-GC window (lite-gc-profiler) ----------------------------------------------------
-await check('A13 gc: 1e6 setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto -> maxMajor 0, maxMinor 0', async () => {
+await check('A13 gc: 1e6 setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto + 1e5 decimateInto -> maxMajor 0, maxMinor 0', async () => {
     const s = new OhlcSeries(CAP, 1000);
     const b = new Float64Array([0, 10.5, 20.25, 5.75, 15.5, 100.5]);
     for (let k = 0; k < CAP; k++) { b[0] = EPOCH_BASE + k * 1000; s.appendBarFrom(b, 0); }
     b[0] = EPOCH_BASE + CAP * 1000;
     const out = new Float64Array(9);
+    const dec = new Float64Array(7 * 1000);
 
-    function run(nLive, nApp, nBounds) {
+    function run(nLive, nApp, nBounds, nDec) {
         // ring is full (wrapped); appends move base; the live bar is open when the bounds loop runs
         for (let i = 0; i < nApp; i++) { b[0] += 1000; s.appendBarFrom(b, 0); }
         b[0] += 1000;
@@ -107,13 +110,17 @@ await check('A13 gc: 1e6 setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto -> max
             if ((i & 1) === 0) s.boundsInto(i0, i0 + 1000, out, 0);
             else s.boundsInto(CAP - 2001 - i0, CAP - 1, out, 0); // ends at the live bar
         }
-        // H3: add decimateInto (B=1000) to this window once B2a lands (A13).
+        // A13: 1e5 decimateInto(B=1000) per 1e5 bounds; H = 16 so B*H = 16000: n=5000 scan, n=40000 tree
+        for (let i = 0; i < nDec; i++) {
+            const n = (i & 1) === 0 ? 5000 : 40000;
+            s.decimateInto(CAP - n, CAP - 1, 1000, dec, 0); // ends at the live bar
+        }
     }
-    run(200000, 20000, 20000); // warmup, outside the window
+    run(200000, 20000, 20000, 2000); // warmup, outside the window
     globalThis.gc();
 
     const prof = new GcProfiler().start();
-    run(1000000, 100000, 100000);
+    run(1000000, 100000, 100000, 100000);
     await prof.settle();
     const summary = prof.summary();
     prof.stop();
