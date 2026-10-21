@@ -66,6 +66,7 @@ await check('A14 retention: 1000 cycles, size() === 0 and audit() empty after gc
         const dec = new Float64Array(7 * 16);
         s.decimateInto(0, s.count - 1, 16, dec, 0); // tree path (n = 1024 >= 16*10)
         s.decimateInto(0, 99, 16, dec, 0);          // scan path (n = 100 < 160)
+        s.decimateInto(0, 9, 16, dec, 0);           // sparse scan (n = 10 <= B = 16)
     }
     const before = tracker.size();
     await collect();
@@ -92,7 +93,7 @@ await check('A14 control: one retained series -> size() === 1', async () => {
 });
 
 // ---- A13 zero-GC window (lite-gc-profiler) ----------------------------------------------------
-await check('A13 gc: 1e6 setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto + 1e5 decimateInto -> maxMajor 0, maxMinor 0', async () => {
+await check('A13 gc: 1e6 setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto + 1e5 decimateInto (scan / tree / sparse) -> maxMajor 0, maxMinor 0', async () => {
     const s = new OhlcSeries(CAP, 1000);
     const b = new Float64Array([0, 10.5, 20.25, 5.75, 15.5, 100.5]);
     for (let k = 0; k < CAP; k++) { b[0] = EPOCH_BASE + k * 1000; s.appendBarFrom(b, 0); }
@@ -110,9 +111,11 @@ await check('A13 gc: 1e6 setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto + 1e5 
             if ((i & 1) === 0) s.boundsInto(i0, i0 + 1000, out, 0);
             else s.boundsInto(CAP - 2001 - i0, CAP - 1, out, 0); // ends at the live bar
         }
-        // A13: 1e5 decimateInto(B=1000) per 1e5 bounds; H = 16 so B*H = 16000: n=5000 scan, n=40000 tree
+        // A13: 1e5 decimateInto(B=1000) per 1e5 bounds; H = 16 so B*H = 16000: n=5000 scan, n=40000 tree,
+        // n=600 sparse (n <= B: one bar per bucket, still the scan path)
         for (let i = 0; i < nDec; i++) {
-            const n = (i & 1) === 0 ? 5000 : 40000;
+            const r = i % 3;
+            const n = r === 0 ? 5000 : r === 1 ? 40000 : 600;
             s.decimateInto(CAP - n, CAP - 1, 1000, dec, 0); // ends at the live bar
         }
     }

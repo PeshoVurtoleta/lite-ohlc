@@ -180,13 +180,29 @@ test('zerobox: copyRangeInto is <= 0.1 B/op (stride-6 output)', async () => {
     assertZero('copyRangeInto', bpo);
 });
 
+// P2 lane: i0 = -0 passes the `(i0 | 0) === i0` validation, so it reaches the copy loop as a non-Smi
+// HeapNumber. Alternate -0 with +0 through the same 5-class site; the loop index must stay unboxed.
+test('zerobox: copyRangeInto is <= 0.1 B/op with i0 = -0 (alternating -0 / +0)', async () => {
+    requireHarness();
+    const targets = targetsOf(makeSeries());
+    const out = new Float64Array(256 * 6);
+    const bpo = await bytesPerOp((i) => {
+        if ((i & 1) === 0) mCopy(targets[i % 5], -0, 255, out, 0);
+        else mCopy(targets[i % 5], 0, 255, out, 0);
+    });
+    assertZero('copyRangeInto -0', bpo);
+});
+
 // decimateInto lanes. Path rule (S7): H = log2(CAP) = 16; n = i1-i0+1 < B*H -> scan, else tree.
-// SCAN: B = 20 -> B*H = 320; n = 200 < 320.  TREE: B = 20; n = 2000 >= 320.  Guards below assert both.
+// SCAN: B = 20 -> B*H = 320; n = 200 < 320.  TREE: B = 20; n = 2000 >= 320.
+// SPARSE: n = 12 <= B = 20 (one bar per bucket; still the scan path by the H rule).  Guards assert all three.
 const DEC_B = 20;
 function decimateLane(name, n) {
     test('zerobox: decimateInto is <= 0.1 B/op (' + name + ' path, fractional volumes, wrapped ring + live bar)', async () => {
         requireHarness();
-        assert.ok(name === 'scan' ? n < DEC_B * 16 : n >= DEC_B * 16, 'lane picks the ' + name + ' path by the H rule');
+        assert.ok(name === 'tree' ? n >= DEC_B * 16 : n < DEC_B * 16 && (name !== 'sparse' || n <= DEC_B) &&
+            (name !== 'scan' || n > DEC_B),
+            'lane picks the ' + name + ' path by the H rule');
         const s = makeSeries();
         const b = new Float64Array([EPOCH_BASE + CAP * 1000, 10.5, 20.25, 5.75, 15.5, 100.5]);
         for (let k = 0; k < 777; k++) { s.appendBarFrom(b, 0); b[0] += 1000; } // base moves: ranges wrap
@@ -204,6 +220,7 @@ function decimateLane(name, n) {
 }
 decimateLane('scan', 200);
 decimateLane('tree', 2000);
+decimateLane('sparse', 12);
 
 test('zerobox: version and count getters are <= 0.1 B/op', async () => {
     requireHarness();

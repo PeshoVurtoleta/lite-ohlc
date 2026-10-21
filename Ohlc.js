@@ -525,7 +525,7 @@ export class OhlcSeries {
         const cc = this._c;
         const vc = this._v;
         let d = off;
-        for (let i = i0; i <= i1; i++) {
+        for (let i = i0 | 0; i <= i1; i++) {
             const p = (base + i) & mask;
             out[d] = tc[p];
             out[d + 1] = oc[p];
@@ -564,6 +564,7 @@ export class OhlcSeries {
 
     /** Linear-scan decimation over validated args. Bars fold in logical order; v summed sequentially. */
     _decimateScan(i0, i1, B, out, off) {
+        if (i1 - i0 < B) return this._decimateSparse(i0, i1, B, out, off);
         const s = this._s;
         const base = s[S_BASE];
         const mask = this._mask;
@@ -603,6 +604,33 @@ export class OhlcSeries {
             a = e + 1;
         }
         return w;
+    }
+
+    /** Fast path for n <= B over validated args: O(n), one bar per bucket, k = floor(m * B / n). */
+    _decimateSparse(i0, i1, B, out, off) {
+        const s = this._s;
+        const base = s[S_BASE];
+        const mask = this._mask;
+        const tc = this._t;
+        const oc = this._o;
+        const hc = this._h;
+        const lc = this._l;
+        const cc = this._c;
+        const vc = this._v;
+        const n = i1 - i0 + 1;
+        let d = off;
+        for (let m = 0; m < n; m++) {
+            const p = (base + i0 + m) & mask;
+            out[d] = tc[p];
+            out[d + 1] = oc[p];
+            out[d + 2] = hc[p];
+            out[d + 3] = lc[p];
+            out[d + 4] = cc[p];
+            out[d + 5] = vc[p];
+            out[d + 6] = Math.floor((m * B) / n) | 0; // m * B < 2^40: exact; | 0 never yields -0
+            d += 7;
+        }
+        return n;
     }
 
     /**
