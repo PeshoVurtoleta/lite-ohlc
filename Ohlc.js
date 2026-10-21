@@ -5,9 +5,11 @@
  * CLOSED bars, and an O(1) live (forming) bar outside the tree.
  *
  * Hot path: one fused tree walk per closed bar, an O(1) live-bar write, iterative fused
- * queries that leave their results in a Float64 scratch, binary searches. Every return value
- * is a SMI. Cold path: ctor validation, every throw (module-level fail*() helpers), the scalar
- * wrappers and the oldestTime / latestTime / interval getters (each boxes a double once).
+ * queries that leave their results in a Float64 scratch, binary searches. Every numeric hot
+ * return value is a SMI (writes return this). Cold path: ctor validation, every throw
+ * (module-level fail*() helpers), the scalar wrappers and the oldestTime / latestTime /
+ * interval getters (a wrapper boxes each fractional or large argument; a getter boxes its
+ * result once).
  *
  * MIT (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
  */
@@ -324,7 +326,10 @@ export class OhlcSeries {
         return this;
     }
 
-    /** Scalar wrapper of appendBarFrom (cold: boxes fractional args). All six required. */
+    /**
+     * Scalar wrapper of appendBarFrom (cold: boxes fractional or large args).
+     * All six required.
+     */
     appendBar(t, o, h, l, c, v) {
         if (typeof t !== 'number' || typeof o !== 'number' || typeof h !== 'number' ||
             typeof l !== 'number' || typeof c !== 'number' || typeof v !== 'number') failArgs();
@@ -338,7 +343,10 @@ export class OhlcSeries {
         return this.appendBarFrom(f, F_STG);
     }
 
-    /** Scalar wrapper of setLiveFrom (cold: boxes fractional args). All six required. */
+    /**
+     * Scalar wrapper of setLiveFrom (cold: boxes fractional or large args).
+     * All six required.
+     */
     setLive(t, o, h, l, c, v) {
         if (typeof t !== 'number' || typeof o !== 'number' || typeof h !== 'number' ||
             typeof l !== 'number' || typeof c !== 'number' || typeof v !== 'number') failArgs();
@@ -414,12 +422,24 @@ export class OhlcSeries {
         return lo;
     }
 
+    /**
+     * First logical index with time >= x, or -1 (empty, non-finite, none). Scalar wrapper over
+     * lowerBoundFrom (stages x in the Float64 scratch). Returns -1 when x is not a finite
+     * number: typeof x !== 'number', or NaN / +/-Infinity (exactly what `x - x !== 0`
+     * rejects).
+     */
     lowerBound(x) {
         if (typeof x !== 'number' || (x - x !== 0)) return -1;
         this._f[F_STG] = x;
         return this.lowerBoundFrom(this._f, F_STG);
     }
 
+    /**
+     * LAST logical index with time <= x, or -1 (empty, non-finite, none). Scalar wrapper over
+     * upperBoundFrom (stages x in the Float64 scratch). Returns -1 when x is not a finite
+     * number: typeof x !== 'number', or NaN / +/-Infinity (exactly what `x - x !== 0`
+     * rejects).
+     */
     upperBound(x) {
         if (typeof x !== 'number' || (x - x !== 0)) return -1;
         this._f[F_STG] = x;
@@ -527,7 +547,7 @@ export class OhlcSeries {
      * throws RangeError, even for an invalid range. An invalid range returns 0, writes nothing.
      * Path: n < B * log2(capacity) -> linear scan (v summed sequentially), else one fused tree
      * query per bucket (v == boundsInto(s_k, e_k)[5]). t, o, h, l, c, k are byte-identical
-     * across paths; v is byte-identical only for integer volumes.
+     * across paths; v is byte-identical for integer volumes whose sums stay below 2^53.
      */
     decimateInto(i0, i1, B, out, off = 0) {
         if (!(out instanceof Float64Array)) failOut();

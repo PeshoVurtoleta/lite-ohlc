@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-21
+
 First release of `@zakkster/lite-ohlc`. It is a REWRITE salvaged from the
 never-published v1 source (`LiteTimeSeries.js`, package name
 `@zakkster/lite-time-series`, which was never published to npm). From v1 only
@@ -99,8 +101,9 @@ Nothing published breaks; this list is for anyone who has the v1 source.
   It is red on the frozen v1 source (for example its first vector reports bucket
   index 3 where the oracle expects 0) and green on v2.
 
-### Verified (this cycle, 2026-10-21, Node v26.8.2, macOS Darwin 27, 1-min
-load 2.3-3.0, run under the suite quiet-lock)
+### Verified (this cycle, 2026-10-21, Node v26.8.2, macOS Darwin 27, run under
+the suite quiet-lock; release `npm run verify` at 1-min load 5.0, the 30-run
+zerobox loop at 1-min load 2.3-3.0; these gates are GC and allocation counts)
 
 - `npm test`: 95 tests, 95 pass.
 - `npm run test:zerobox`: 10 of 10 pass (gates at `<= 0.1 B/op`; the control

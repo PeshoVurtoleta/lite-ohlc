@@ -84,8 +84,8 @@ export declare class OhlcSeries {
     setLiveFrom(buf: Float64Array, off?: number): this;
 
     /**
-     * Scalar wrapper of appendBarFrom; all six arguments are required. Cold: fractional
-     * arguments box.
+     * Scalar wrapper of appendBarFrom; all six arguments are required. Cold: fractional or
+     * large arguments box.
      * @throws {TypeError} any argument is not a number.
      * @throws {RangeError} as appendBarFrom (invalid candle, earlier time).
      * @returns this
@@ -93,7 +93,7 @@ export declare class OhlcSeries {
     appendBar(t: number, o: number, h: number, l: number, c: number, v: number): this;
 
     /**
-     * Scalar wrapper of setLiveFrom; all six arguments are required. Cold: fractional
+     * Scalar wrapper of setLiveFrom; all six arguments are required. Cold: fractional or large
      * arguments box.
      * @throws {TypeError} any argument is not a number.
      * @throws {RangeError} as setLiveFrom (invalid candle, earlier time).
