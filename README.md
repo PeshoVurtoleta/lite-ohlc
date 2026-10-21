@@ -223,7 +223,7 @@ It returns the number written, `min(n, B)`; empty buckets (only when `n < B`) wr
 
 | Constant        | Value     | Meaning                                              |
 | --------------- | --------- | ---------------------------------------------------- |
-| `VERSION`       | `'1.0.0'` | Package version string.                              |
+| `VERSION`       | `'1.0.1'` | Package version string.                              |
 | `CANDLE_STRIDE` | `6`       | `[t, o, h, l, c, v]`.                                |
 | `BOUNDS_STRIDE` | `9`       | `boundsInto` record.                                 |
 | `BUCKET_STRIDE` | `7`       | `decimateInto` record.                               |

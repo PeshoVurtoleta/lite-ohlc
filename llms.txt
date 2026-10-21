@@ -7,7 +7,7 @@ bar kept outside the tree. It answers "what are the bounds / the decimated
 buckets of this visible range" without scanning the whole history, and takes
 ticks without allocating. Single-file ESM, zero runtime dependencies.
 
-## Status: 1.0.0
+## Status: 1.0.1
 
 ## Install and import
 
@@ -24,9 +24,9 @@ ticks without allocating. Single-file ESM, zero runtime dependencies.
     const bnd = new Float64Array(BOUNDS_STRIDE);
     series.boundsInto(0, series.count - 1, bnd);
 
-## API (1.0.0)
+## API (1.0.1)
 
-Named exports: VERSION '1.0.0'; CANDLE_STRIDE 6; BOUNDS_STRIDE 9; BUCKET_STRIDE 7;
+Named exports: VERSION '1.0.1'; CANDLE_STRIDE 6; BOUNDS_STRIDE 9; BUCKET_STRIDE 7;
 MIN_CAPACITY 2; MAX_CAPACITY 4194304 (2^22); MAX_BUCKETS 1048576 (2^20); class OhlcSeries.
 
 Bars are addressed by LOGICAL index 0..count-1, 0 = oldest. A candle is always

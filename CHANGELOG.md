@@ -4,7 +4,7 @@ All notable changes to `@zakkster/lite-ohlc` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.0.1] - 2026-10-21
 
 ### Changed
 
