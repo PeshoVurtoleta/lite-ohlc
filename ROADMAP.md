@@ -44,3 +44,25 @@ Research: https://claude.ai/code/artifact/890fefa2-de01-4f30-8b7e-fbed87d07be2
 7. Release.
 Later (other packages): lite-charts source contract (~5-6 bursts); indicators layer on
 lite-o1 WindowFold; robust autoscale via SlidingDDSketch / DDSketch.
+
+## 1.0.1 (patch; output byte-identical to 1.0.0) -- from the 2026-10-21 external review
+
+Accepted by the orchestrator after checking against `Ohlc.js` (the review's line numbers were
+~100 off the shipped file); scope approved by the maintainer 2026-10-21.
+- P1: `_decimateScan` fast path for n <= B (Ohlc.js:566). Today the bucket loop runs B times
+  even when n < B, so n = 1, B = MAX_BUCKETS costs 2^20 iterations. When n <= B each non-empty
+  bucket holds exactly one bar, bar m (logical i0 + m) in bucket k = floor(m * B / n): copy the
+  bar, write k, return n. Scan path becomes O(n). Pre-check (orchestrator, run against the
+  live 1.0.0 file; .handoff/fastpath-check.mjs, gitignored): 1600 random cases (capacity
+  2..1024, wrapped ring, live bar, fractional volumes) gave the fast path's expected output
+  byte-identical to 1.0.0 `decimateInto`; floor(m * B / n) matches BigInt at
+  n = 2^22, B = 2^20. Proof required: parity vs `git show v1.0.0:Ohlc.js` (sweep incl.
+  n = 1 / B = MAX_BUCKETS, n = B, S_H = 1); zerobox for the new branch. A "fails on the old
+  code" gate for a work-count change is STATISTICAL tier (n = 1, B = 2^20 vs B = 1, interleaved,
+  quiet host) or none -- planner decides; docs must not claim a measured speedup without it.
+  Docs: complexity "O(n + B) on the scan path" -> "O(n)" in README / llms.txt / d.ts / CHANGELOG.
+- P2: `copyRangeInto` loop starts at `i0 | 0` (Ohlc.js:528), matching decimateInto's `| 0`, so a
+  caller's -0 never seeds a double induction variable. No output change (indices are never
+  written there). The `end = i1 | 0` part of the review's suggestion is not needed.
+- Ride-along (doc-only): llms.txt ~:125 orphan "use the" + :106-120 wrap; README ~:329 table
+  padding; Ohlc.d.ts appendBar / setLive comment break alignment.
