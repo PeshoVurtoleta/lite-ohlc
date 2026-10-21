@@ -4,6 +4,19 @@ All notable changes to `@zakkster/lite-ohlc` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/); this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Docs
+
+- README: new "Benchmarks (REPORTED)" subsection (headline, full table
+  including ties and losses, controls, provenance) and the bench command in
+  Testing.
+- llms.txt: benchmark headline plus a pointer to the README section.
+- README / llms.txt: "not benchmarked" / "no timing data" wording replaced
+  (the 1.0.1 and 1.0.0 entries below keep theirs; true for those releases).
+- Measured numbers come from bench/RESULTS.md (2026-10-21, Apple M4 Pro,
+  Node v26.8.2, 1 run x 21 rounds).
+
 ## [1.0.1] - 2026-10-21
 
 ### Changed

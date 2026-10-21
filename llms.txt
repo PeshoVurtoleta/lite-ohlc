@@ -112,10 +112,10 @@ the tree pairwise, so the last bits can differ.
 
 ## Zero-GC and complexity
 
-- Complexity is algorithmic, by construction (not benchmarked): setLiveFrom O(1) for
-  a same-time update (a new later bar closes the previous live bar: one O(log n)
-  tree walk); appendBarFrom O(log n); lowerBound / upperBound O(log n); boundsInto
-  O(log n); decimateInto O(B log capacity) on the tree path, O(n) on the scan path;
+- Complexity is algorithmic, by construction: setLiveFrom O(1) for a same-time
+  update (a new later bar closes the previous live bar: one O(log n) tree walk);
+  appendBarFrom O(log n); lowerBound / upperBound O(log n); boundsInto O(log n);
+  decimateInto O(B log capacity) on the tree path, O(n) on the scan path;
   copyRangeInto O(n); clear O(1).
 - The *From methods, the searches, boundsInto, copyRangeInto, decimateInto and the
   integer getters never allocate. Numeric return values are small integers; the
@@ -129,7 +129,15 @@ the tree pairwise, so the last bits can differ.
   torture with 1e6 setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto + 1e5
   decimateInto (scan / tree / sparse lanes) -> GC major 0, minor 0; retention 1000
   cycles -> 0 retained. A 30-run zerobox loop -> 0 fails was a 1.0.0 run (10 lanes;
-  not re-run for 1.0.1). No timing or throughput figures are published.
+  not re-run for 1.0.1).
+- REPORTED benchmark (gates nothing; a measurement, not a law), measured
+  2026-10-21 on Apple M4 Pro, Node v26.8.2, 1 run x 21 rounds. Ratio = baseline
+  ns/op / lite ns/op (above 1 = lite faster); medians: boundsInto 44.2x-5873x vs
+  a hand-rolled best-form loop at n >= 1e5 (every round >= 5x); decimateInto
+  does not clear 10x vs best form (best median 8.93x; scan path 0.88x-0.96x);
+  setLiveFrom 0.34x-0.35x vs a best-form index ring (slower: it validates each
+  candle and maintains the tree). Full table and provenance: README
+  "Benchmarks (REPORTED)".
 
 ## Gotchas
 

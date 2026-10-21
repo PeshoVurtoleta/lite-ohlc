@@ -316,11 +316,11 @@ All storage is allocated once in the constructor: six column arrays, the tree, a
 
 Every numeric hot return value is a small integer; the writes return the series. The scalar wrappers exist for convenience and as the control of the gate: use the `*From` / `*Into` forms in a frame loop.
 
-Complexity is algorithmic, by construction, and was not benchmarked: `setLiveFrom` O(1) for the new bar, `appendBarFrom` / bounds / searches O(log n), `decimateInto` O(n) on the scan path and O(B log capacity) on the tree path.
+Complexity is algorithmic, by construction: `setLiveFrom` O(1) for the new bar, `appendBarFrom` / bounds / searches O(log n), `decimateInto` O(n) on the scan path and O(B log capacity) on the tree path. The REPORTED benchmark below measures time against baselines on one host and does not prove complexity.
 
 ### Gated numbers
 
-Measured 2026-10-21 on Node v26.8.2, macOS (Darwin 27), under the suite quiet-lock: one `npm run verify` run (exit 0) at 1-minute load average 2.80, except the 30-run zerobox row, which is the 1.0.0 run (not repeated for 1.0.1). There is no timing or benchmark data for this package.
+Measured 2026-10-21 on Node v26.8.2, macOS (Darwin 27), under the suite quiet-lock: one `npm run verify` run (exit 0) at 1-minute load average 2.80, except the 30-run zerobox row, which is the 1.0.0 run (not repeated for 1.0.1). Timing data is in Benchmarks (REPORTED) below; it gates nothing.
 
 | Gate                                                                                                                            | Result                                                                                                  |
 | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
@@ -333,6 +333,81 @@ Measured 2026-10-21 on Node v26.8.2, macOS (Darwin 27), under the suite quiet-lo
 | torture retention: 1000 create/drop cycles                                                                                      | tracker size 0, audit empty                                                                             |
 
 The zerobox thresholds are limits, not measured B/op values; the control proves the gate can fail.
+
+### Benchmarks (REPORTED)
+
+REPORTED tier: this section is a measurement on one host; it gates nothing and proves no complexity.
+
+Measured on Apple M4 Pro, Node v26.8.2, 2026-10-21: `boundsInto` measured 44.2x to 5873x faster than a hand-rolled best-form loop over an array of `{t,o,h,l,c,v}` objects, at n >= 1e5 (median of 21 rounds; every round >= 5x; per-row [min, max] in the table below).
+
+`decimateInto` does not clear the bar against the best form (best median 8.93x at n=1e5, w=1e5, B=800; scan-path rows lose or tie: medians 0.88x / 0.94x / 0.96x), and `setLiveFrom` loses to the best-form index ring at every n (medians 0.34x-0.35x, no round above 0.36x: it validates each candle and maintains the tree; the baseline does neither). The idiomatic-baseline rows (for example `setLive` vs push/shift, medians 14.7x-867x) and the n < 1e5 rows are reported but carry no headline.
+
+What is compared:
+
+- **ratio** = baseline ns/op / lite ns/op, per round; above 1 means lite is faster.
+- **best** baseline = plain for-loops over an array of objects (bounds, and decimate with the same integer bucket bound); for `setLive`, a preallocated index ring that reuses evicted objects, with no validation.
+- **idiomatic** baseline = slice/reduce per bucket for decimate, and a push/shift array for `setLive` (its cost grows with n in this run: 181 / 1277 / 11083 ns/op at n = 1e4 / 1e5 / 1e6). Reported only.
+- **eligible** = op is bounds or decimate, baseline is best, n >= 1e5 (the verdict rule). **clears** = median >= 10 AND min >= 5 over the 21 rounds.
+- **path** = the path taken (tree / scan / sparse); **w** = window bars; **B** = buckets.
+
+All rows (values as written by the harness):
+
+| op | n | w | B | path | baseline | lite ns/op | base ns/op | ratio median [min, max] | IQR | eligible | clears |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| setLive | 1e4 | - | - | - | best | 12.2 | 4.32 | 0.35 [0.35, 0.36] | 0.35-0.36 | no | no |
+| setLive | 1e4 | - | - | - | idiomatic | 12.2 | 181 | 14.7 [14.4, 15.2] | 14.6-14.9 | no | yes |
+| bounds | 1e4 | 1e3 | - | tree | best | 40.1 | 1677 | 42.0 [40.4, 42.8] | 41.5-42.3 | no | yes |
+| decimate | 1e4 | 1e3 | 800 | scan | best | 4192 | 3718 | 0.88 [0.81, 0.98] | 0.85-0.92 | no | no |
+| decimate | 1e4 | 1e3 | 800 | scan | idiomatic | 4314 | 13002 | 3.04 [2.85, 3.60] | 2.97-3.19 | no | no |
+| decimate | 1e4 | 1e3 | 1920 | sparse (1) | best | 2584 | 4620 | 1.79 [1.75, 1.83] | 1.78-1.80 | no | no |
+| decimate | 1e4 | 1e3 | 1920 | sparse (1) | idiomatic | 2590 | 18013 | 6.96 [6.72, 7.64] | 6.94-6.99 | no | no |
+| setLive | 1e5 | - | - | - | best | 12.5 | 4.35 | 0.35 [0.34, 0.36] | 0.35-0.35 | no | no |
+| setLive | 1e5 | - | - | - | idiomatic | 12.5 | 1277 | 102 [101, 106] | 101-103 | no | yes |
+| bounds | 1e5 | 1e3 | - | tree | best | 44.4 | 1965 | 44.2 [42.4, 46.2] | 43.5-44.9 | yes | yes |
+| decimate | 1e5 | 1e3 | 800 | scan | best | 5629 | 5300 | 0.94 [0.88, 0.99] | 0.93-0.95 | yes | no |
+| decimate | 1e5 | 1e3 | 800 | scan | idiomatic | 5639 | 13754 | 2.45 [2.37, 2.60] | 2.42-2.47 | no | no |
+| decimate | 1e5 | 1e3 | 1920 | sparse (1) | best | 2644 | 5051 | 1.91 [1.84, 1.95] | 1.89-1.92 | yes | no |
+| decimate | 1e5 | 1e3 | 1920 | sparse (1) | idiomatic | 2647 | 18705 | 7.07 [6.76, 7.33] | 6.98-7.18 | no | no |
+| bounds | 1e5 | 1e5 | - | tree | best | 29.2 | 171549 | 5873 [5541, 5987] | 5788-5902 | yes | yes |
+| decimate | 1e5 | 1e5 | 800 | tree | best | 24449 | 216599 | 8.93 [8.54, 9.36] | 8.65-9.18 | yes | no |
+| decimate | 1e5 | 1e5 | 800 | tree | idiomatic | 24571 | 650772 | 26.5 [25.8, 27.4] | 26.3-26.8 | no | yes |
+| decimate | 1e5 | 1e5 | 1920 | tree | best | 47018 | 248230 | 5.26 [4.89, 5.79] | 5.15-5.35 | yes | no |
+| decimate | 1e5 | 1e5 | 1920 | tree | idiomatic | 46777 | 604185 | 13.0 [12.5, 13.3] | 12.8-13.1 | no | yes |
+| setLive | 1e6 | - | - | - | best | 13.2 | 4.45 | 0.34 [0.33, 0.36] | 0.34-0.34 | no | no |
+| setLive | 1e6 | - | - | - | idiomatic | 12.8 | 11083 | 867 [844, 883] | 856-873 | no | yes |
+| bounds | 1e6 | 1e3 | - | tree | best | 48.2 | 2810 | 57.6 [48.9, 60.5] | 56.1-59.3 | yes | yes |
+| decimate | 1e6 | 1e3 | 800 | scan | best | 6087 | 5842 | 0.96 [0.91, 1.02] | 0.94-0.97 | yes | no |
+| decimate | 1e6 | 1e3 | 800 | scan | idiomatic | 5967 | 14029 | 2.35 [2.25, 2.60] | 2.34-2.37 | no | no |
+| decimate | 1e6 | 1e3 | 1920 | sparse (1) | best | 2928 | 5320 | 1.81 [1.66, 1.85] | 1.78-1.83 | yes | no |
+| decimate | 1e6 | 1e3 | 1920 | sparse (1) | idiomatic | 2993 | 19385 | 6.50 [5.89, 6.97] | 6.41-6.64 | no | no |
+| bounds | 1e6 | 1e5 | - | tree | best | 85.8 | 215945 | 2519 [1999, 2817] | 2463-2650 | yes | yes |
+| decimate | 1e6 | 1e5 | 800 | tree | best | 131871 | 309627 | 2.36 [2.31, 2.43] | 2.34-2.39 | yes | no |
+| decimate | 1e6 | 1e5 | 800 | tree | idiomatic | 132054 | 733199 | 5.59 [5.31, 5.68] | 5.56-5.62 | no | no |
+| decimate | 1e6 | 1e5 | 1920 | tree | best | 256243 | 371338 | 1.47 [1.44, 1.51] | 1.46-1.48 | yes | no |
+| decimate | 1e6 | 1e5 | 1920 | tree | idiomatic | 251272 | 650927 | 2.61 [2.52, 2.67] | 2.57-2.62 | no | no |
+
+(1) sparse: the window holds fewer bars than buckets (w=1e3 < B=1920), so `decimateInto` copies each bar into its own bucket (920 of the 1920 buckets stay empty). The harness marks the n >= 1e5 best-form sparse rows eligible; they do not clear and no headline rests on them.
+
+Controls:
+
+| control | A ns/op | B ns/op | ratio median [min, max] | IQR | clears |
+|---|---|---|---|---|---|
+| setLive 1e5 lite vs lite | 12.5 | 12.5 | 0.99 [0.98, 1.02] | 0.99-0.99 | no |
+| decimate (1e5, 1e3, 800) scan lite vs lite | 5595 | 5842 | 1.04 [1.02, 1.06] | 1.03-1.04 | no |
+| bounds (1e6, 1e5) lite vs lite | 78.2 | 80.8 | 1.01 [0.90, 1.09] | 0.98-1.06 | no |
+| decimate (1e6, 1e5, 1920) tree lite vs lite | 256026 | 254587 | 1.00 [0.93, 1.02] | 0.99-1.02 | no |
+| baseBounds n=1e6 w=1e5 vs w=1e3 | 2830 | 216958 | 76.6 [74.8, 79.1] | 76.1-77.5 | yes |
+
+Lite-vs-lite controls must have a median in [0.8, 1.25] and must not clear; the positive control (the baseline against itself at w=1e5 vs w=1e3) must clear. All passed.
+
+Provenance:
+
+- date 2026-10-21T06:48Z; Apple M4 Pro, 12 cpus; Node v26.8.2.
+- 1 run x 21 rounds; ABBA blocks of ~20 ms per side, 3 warmup blocks, `gc()` before every block.
+- load1 2.24 at start, max 3.22 (bar 4.0); no other node process >= 10% CPU. Run by the maintainer from Terminal.app under the suite quiet-lock, with the Claude app and the IDE closed.
+- GC over timed lite blocks: major 0 / minor 0 (baseline: minor 462, reported).
+- Cross-check bitwise PASS before timing (5120 bounds + 10240 decimate + 10240 idiomatic starts + 6 setLive sides).
+- Source: `bench/RESULTS.md` in the repository (`bench/` is not published in the npm package).
 
 </details>
 
@@ -361,6 +436,12 @@ npm test             # node:test: core, oracle, parity, decimate, qa boundaries,
 npm run test:zerobox # --expose-gc: <= 0.1 B/op per hot method, with a boxing control
 npm run torture      # lite-leak + lite-gc-profiler: GC window and retention
 npm run verify       # test + zerobox + torture
+```
+
+The benchmark is not an npm script; run it directly (`--smoke` = cross-check plus one untimed call per row; `--probe` = assert each decimate row's path). Exit 0 = MET or MISSED, 1 = abort (cross-check or probe failure, no `--expose-gc`, unknown flag), 2 = inconclusive (busy host or failed controls):
+
+```bash
+node --expose-gc bench/ohlc-vs-baseline.mjs   # REPORTED-tier bench vs best-form / idiomatic baselines; writes bench/RESULTS.md
 ```
 
 Oracles: range results are checked against a naive scan and against `@zakkster/lite-logn`'s `SegmentTree`. The B0 gates (`test/b0-drift.test.mjs`, `test/b0-decimate.test.mjs`) were written against the unpublished v1 and fail on it.
