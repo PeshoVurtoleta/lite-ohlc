@@ -29,27 +29,15 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/unit.test.mjs test/parity.test.mjs test/oracle.test.mjs test/qa-boundary.test.mjs",
+    "test": "node --test test/ohlc-*.test.mjs test/b0-drift.test.mjs",
     "test:zerobox": "node --expose-gc --min-semi-space-size=4 --max-semi-space-size=4 --test test/zerobox.test.mjs",
     "torture": "node --expose-gc --min-semi-space-size=4 --max-semi-space-size=4 test/torture.mjs",
     "verify": "npm test && npm run test:zerobox && npm run torture"
   },
-  "peerDependencies": {
-    "@zakkster/lite-logn": "^1.5.1",
-    "@zakkster/lite-lru": "^1.19.0",
-    "@zakkster/lite-viewport": "^1.1.0"
-  },
-  "peerDependenciesMeta": {
-    "@zakkster/lite-viewport": {
-      "optional": true
-    }
-  },
   "devDependencies": {
     "@zakkster/lite-gc-profiler": "^1.16.0",
     "@zakkster/lite-leak": "^1.10.0",
-    "@zakkster/lite-logn": "^1.5.1",
-    "@zakkster/lite-lru": "^1.19.0",
-    "@zakkster/lite-viewport": "^1.1.0"
+    "@zakkster/lite-logn": "^1.5.1"
   },
   "homepage": "https://github.com/PeshoVurtoleta/lite-ohlc#readme",
   "repository": {

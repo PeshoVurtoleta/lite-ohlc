@@ -1,196 +1,131 @@
-// test/torture.mjs -- node --expose-gc test/torture.mjs
-import { PerformanceObserver } from 'node:perf_hooks';
-import {
-    createTimeSeries,
-    createViewport,
-    createTimeSeriesPool,
-    hitTestFrom,
-    BOUNDS_STRIDE,
-    BUCKET_STRIDE,
-    HIT_STRIDE
-} from '../Ohlc.js';
+// test/torture.mjs -- A14 (+ the A13 zero-GC window). DETERMINISTIC tier, no timing thresholds.
+// Run: node --expose-gc --min-semi-space-size=4 --max-semi-space-size=4 test/torture.mjs
+// Prints PASS / FAIL per check; exit code 1 on any FAIL. Real libraries only:
+//   @zakkster/lite-leak (retention: tracker.size() must return to 0)
+//   @zakkster/lite-gc-profiler (budget: maxMajor 0 / maxMinor 0 over the hot window)
+import { setTimeout as sleep } from 'node:timers/promises';
+import { GcProfiler, assertNoGc } from '@zakkster/lite-gc-profiler';
+import { createLeakTracker } from '@zakkster/lite-leak';
+import { OhlcSeries } from '../Ohlc.js';
 
-// Minimal zero-dependency retention tracker conforming to lite-leak semantics
-function createTracker() {
-    let size = 0;
-    const findings = [];
-    const registry = new FinalizationRegistry((held) => {
-        size--;
-    });
+const EPOCH_BASE = 1700000000123.5; // fractional epoch ms
+const CAP = 65536;
+const CYCLES = 1000;
+let failed = 0;
+const gate = { size: -1, findings: -1, warnings: 0, major: -1, minor: -1, maxMs: 0 }; // filled by the checks below
 
-    return {
-        track(target, tag) {
-            size++;
-            registry.register(target, tag);
-        },
-        size() {
-            return size;
-        },
-        audit() {
-            return findings;
+function report(name, ok, detail) {
+    if (!ok) failed++;
+    console.log((ok ? 'PASS ' : 'FAIL ') + name + (detail ? ' -- ' + detail : ''));
+}
+
+async function check(name, fn) {
+    try {
+        const detail = await fn();
+        report(name, true, detail);
+    } catch (e) {
+        report(name, false, e && e.message ? e.message : String(e));
+    }
+}
+
+// Fail closed: a torture run without gc() or the pinned 4 MB semi-space proves nothing.
+const execArgs = process.execArgv.join(' ');
+if (typeof globalThis.gc !== 'function'
+    || !/--min-semi-space-size=4\b/.test(execArgs) || !/--max-semi-space-size=4\b/.test(execArgs)) {
+    console.log('FAIL harness -- run: node --expose-gc --min-semi-space-size=4 --max-semi-space-size=4 test/torture.mjs');
+    process.exit(1);
+}
+
+// FinalizationRegistry callbacks run on later macrotasks: collect, then yield, three times.
+async function collect() {
+    for (let k = 0; k < 3; k++) {
+        globalThis.gc();
+        await sleep(50);
+    }
+}
+
+// ---- A14 phase 1: retention (lite-leak) -------------------------------------------------------
+// The cleanup closure and the tag must NOT close over the target (lite-leak held-value contract).
+// No kernels are registered: Ohlc owns no timers, listeners or observers, so size() is the oracle.
+await check('A14 retention: 1000 cycles, size() === 0 and audit() empty after gc x3', async () => {
+    const tracker = createLeakTracker({ name: 'ohlc-torture', onWarning: () => { gate.warnings++; } });
+    const b = new Float64Array(6);
+    const out = new Float64Array(9);
+    let cleaned = 0;
+    for (let c = 0; c < CYCLES; c++) {
+        const s = new OhlcSeries(1024, 60000);
+        tracker.track(s, () => { cleaned++; }, 'ohlc:' + c);
+        for (let k = 0; k < 2048; k++) {
+            b[0] = EPOCH_BASE + k * 60000;
+            b[1] = 10.5; b[2] = 20.25; b[3] = 5.75; b[4] = 15.5; b[5] = 100.5;
+            s.appendBarFrom(b, 0);
+            if ((k & 63) === 63) s.boundsInto(0, s.count - 1, out, 0);
+            if (k >= 1948) s.setLive(EPOCH_BASE + (k + 1) * 60000, 10.5, 20.25, 5.75, 15.5, 100.5);
         }
-    };
-}
-
-// Minimal zero-dependency GC profiler conforming to lite-gc-profiler semantics
-class GcProfiler {
-    constructor() {
-        this.major = 0;
-        this.minor = 0;
-        this.maxMs = 0;
-        this.obs = new PerformanceObserver((list) => {
-            for (const entry of list.getEntries()) {
-                const dur = entry.duration;
-                if (dur > this.maxMs) this.maxMs = dur;
-                // Kind 1 = Scavenge (minor), Kind 2 = Mark-sweep-compact (major)
-                const detail = entry.detail;
-                if (detail && detail.kind === 2) {
-                    this.major++;
-                } else {
-                    this.minor++;
-                }
-            }
-        });
+        s.boundsInto(0, s.count - 1, out, 0);
+        // H3: add decimateInto here once B2a lands (A14).
     }
-
-    start() {
-        this.obs.observe({ entryTypes: ['gc'] });
-        return this;
-    }
-
-    stop() {
-        this.obs.disconnect();
-    }
-
-    summary() {
-        return {
-            gc: {
-                major: this.major,
-                minor: this.minor,
-                maxMs: this.maxMs
-            }
-        };
-    }
-}
-
-function checkNoGc(summary, limits = { maxMajor: 0, maxPauseMs: 4 }) {
-    const violations = [];
-    if (summary.gc.major > limits.maxMajor) {
-        violations.push({ metric: 'major', limit: limits.maxMajor, actual: summary.gc.major });
-    }
-    if (summary.gc.maxMs > limits.maxPauseMs) {
-        violations.push({ metric: 'maxMs', limit: limits.maxPauseMs, actual: summary.gc.maxMs });
-    }
-    return {
-        ok: violations.length === 0,
-        violations
-    };
-}
-
-const CYCLES = 4096;
-const HOT = 200000;
-const leaks = [];
-const warns = [];
-
-const tracker = createTracker();
-
-// ---- phase 1: retention torture ------------------------------------------
-for (let i = 0; i < CYCLES; i++) {
-    let ts = createTimeSeries({ capacity: 16 });
-    let vp = createViewport();
-    let canvasVp = {
-        width: 800,
-        height: 600,
-        dpr: 1,
-        onResize: () => {}
-    };
-    vp.bindViewport(canvasVp);
-    vp.unbindViewport();
-
-    let pool = createTimeSeriesPool({ maxSeries: 4, seriesCapacity: 16 });
-    pool.acquire('k1');
-    pool.acquire('k2');
-    pool.acquire('k3');
-    pool.acquire('k4');
-    pool.acquire('k5');
-    pool.delete('k2');
-
-    tracker.track(ts, 'series_' + i);
-    tracker.track(vp, 'viewport_' + i);
-    tracker.track(canvasVp, 'canvas_vp_' + i);
-    tracker.track(pool, 'pool_' + i);
-    ts = null;
-    vp = null;
-    canvasVp = null;
-    pool = null;
-}
-
-globalThis.gc?.();
-await new Promise((r) => setTimeout(r, 50));
-globalThis.gc?.();
-await new Promise((r) => setTimeout(r, 50));
-
-const live = tracker.size();
-const findings = tracker.audit();
-
-// ---- phase 2: allocation + GC torture ------------------------------------
-const gc = new GcProfiler().start();
-
-// Steady-state instances allocated OUTSIDE the loop, stepped inside
-const inst = createTimeSeries({ capacity: 1024 });
-inst.append(1000, 10, 20, 5, 15, 100);
-
-const vp = createViewport({
-    width: 800,
-    height: 400,
-    minTime: 1000,
-    maxTime: 6000,
-    minPrice: 0,
-    maxPrice: 50
+    const before = tracker.size();
+    await collect();
+    const size = tracker.size();
+    const findings = tracker.audit();
+    gate.size = size;
+    gate.findings = findings.length;
+    if (size !== 0) throw new Error('size() = ' + size + ' after gc x3 (was ' + before + ' before), cleaned=' + cleaned);
+    if (findings.length !== 0) throw new Error('audit() has ' + findings.length + ' finding(s)');
+    return 'size 0, audit empty, cleaned=' + cleaned;
 });
 
-const inBuf = new Float64Array([1000, 12.5, 22.5, 6.5, 18.5, 200]);
-const rangeBuf = new Float64Array([1000, 2000]);
-const outBounds = new Float64Array(BOUNDS_STRIDE);
-const outBuckets = new Float64Array(4 * BUCKET_STRIDE);
-const inHit = new Float64Array([400, 200, 20]);
-const outHit = new Float64Array(HIT_STRIDE);
+// Must-fail control: one retained target must read size() === 1 (the oracle can see a leak).
+await check('A14 control: one retained series -> size() === 1', async () => {
+    const tracker = createLeakTracker({ name: 'ohlc-control' });
+    const retained = new OhlcSeries(1024, 60000);
+    tracker.track(retained, () => {}, 'retained');
+    for (let c = 0; c < 50; c++) tracker.track(new OhlcSeries(1024, 60000), () => {}, 'dropped:' + c);
+    await collect();
+    const size = tracker.size();
+    if (size !== 1) throw new Error('expected size() === 1, got ' + size);
+    if (retained.count !== 0) throw new Error('retained series must stay alive and empty');
+    return 'size 1';
+});
 
-const steadyPool = createTimeSeriesPool({ maxSeries: 8, seriesCapacity: 64 });
-const steadySymbols = ['S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7'];
-for (let i = 0; i < 8; i++) steadyPool.acquire(steadySymbols[i]);
-let lastVersion = -1;
+// ---- A13 zero-GC window (lite-gc-profiler) ----------------------------------------------------
+await check('A13 gc: 1e6 setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto -> maxMajor 0, maxMinor 0', async () => {
+    const s = new OhlcSeries(CAP, 1000);
+    const b = new Float64Array([0, 10.5, 20.25, 5.75, 15.5, 100.5]);
+    for (let k = 0; k < CAP; k++) { b[0] = EPOCH_BASE + k * 1000; s.appendBarFrom(b, 0); }
+    b[0] = EPOCH_BASE + CAP * 1000;
+    const out = new Float64Array(9);
 
-for (let i = 0; i < HOT; i++) {
-    inst.updateLatestFrom(inBuf, 0);
-    inst.computeBoundsFrom(rangeBuf, 0, outBounds, 0);
-    inst.decimateFrom(rangeBuf, 0, 4, outBuckets, 0);
-    hitTestFrom(inst, vp, inHit, 0, outHit, 0);
-
-    const s = steadyPool.acquire(steadySymbols[i & 7]);
-    if (s.version === lastVersion) {
-        lastVersion = s.version;
+    function run(nLive, nApp, nBounds) {
+        // ring is full (wrapped); appends move base; the live bar is open when the bounds loop runs
+        for (let i = 0; i < nApp; i++) { b[0] += 1000; s.appendBarFrom(b, 0); }
+        b[0] += 1000;
+        for (let i = 0; i < nLive; i++) { b[4] = 15.5 + (i & 3) * 0.25; s.setLiveFrom(b, 0); }
+        for (let i = 0; i < nBounds; i++) {
+            const i0 = (i * 31) & 16383;
+            if ((i & 1) === 0) s.boundsInto(i0, i0 + 1000, out, 0);
+            else s.boundsInto(CAP - 2001 - i0, CAP - 1, out, 0); // ends at the live bar
+        }
+        // H3: add decimateInto (B=1000) to this window once B2a lands (A13).
     }
-}
+    run(200000, 20000, 20000); // warmup, outside the window
+    globalThis.gc();
 
-await new Promise((r) => setTimeout(r, 50));
-const s = gc.summary();
-const report = checkNoGc(s, { maxMajor: 0, maxPauseMs: 4 });
-gc.stop();
+    const prof = new GcProfiler().start();
+    run(1000000, 100000, 100000);
+    await prof.settle();
+    const summary = prof.summary();
+    prof.stop();
+    gate.major = summary.gc.major;
+    gate.minor = summary.gc.minor;
+    gate.maxMs = summary.gc.maxMs;
+    assertNoGc(summary, { maxMajor: 0, maxMinor: 0 });
+    return 'major ' + summary.gc.major + ', minor ' + summary.gc.minor;
+});
 
-const ok = report.ok && live === 0 && leaks.length === 0 && findings.length === 0;
-console.log(
-    'GATE leak=size ' + live + '/0 findings=' + findings.length +
-    ' warnings=' + warns.length +
-    ' | gc major=' + s.gc.major + ' minor=' + s.gc.minor +
-    ' maxMs=' + s.gc.maxMs.toFixed(2) +
-    ' | alloc=0 B/op | ' + (ok ? 'ok' : 'FAIL')
-);
-if (!ok) {
-    for (const v of report.violations) {
-        console.error('  violation ' + v.metric + ' limit=' + v.limit + ' actual=' + v.actual);
-    }
-    for (const f of findings) console.error('  finding ' + f.kind + ':' + f.reason);
-    for (const l of leaks) console.error('  leak ' + l);
-    process.exitCode = 1;
-}
+console.log('GATE leak=size ' + gate.size + '/0 findings=' + gate.findings + ' warnings=' + gate.warnings +
+    ' | gc major=' + gate.major + ' minor=' + gate.minor + ' maxMs=' + Number(gate.maxMs).toFixed(2) +
+    ' | ' + (failed === 0 ? 'ok' : 'FAIL'));
+console.log(failed === 0 ? 'ALL PASS' : failed + ' FAILED');
+process.exit(failed === 0 ? 0 : 1);

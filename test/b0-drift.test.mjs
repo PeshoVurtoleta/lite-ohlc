@@ -18,7 +18,7 @@ function mulberry32(a) {
 const T0 = 1.7e12;
 const STEP = 60000;
 const CAP = 1024;
-const PRE = 1;
+const PRES = [1, 3, 7, 777];
 const tOf = (j) => T0 + j * STEP;
 
 // api: { make(cap), append(s,t,o,h,l,c,v), bounds(s,i0,i1,out) } where i0/i1 are logical indices
@@ -43,8 +43,8 @@ if (mod.OhlcSeries) {
     throw new Error('module exports neither OhlcSeries nor LiteTimeSeries');
 }
 
-for (const N of [4, 64, 2048]) {
-    test('A1 drift: N=' + N + ' (' + (N * CAP + PRE) + ' random-volume bars, then 256 zero-volume bars)', () => {
+for (const N of [4, 64, 2048]) for (const PRE of PRES) {
+    test('A1 drift: N=' + N + ' PRE=' + PRE + ' (' + (N * CAP + PRE) + ' random-volume bars, then 256 zero-volume bars)', () => {
         const rng = mulberry32(0x0DDBA11);
         const s = api.make(CAP);
         let M = 0;
@@ -62,10 +62,10 @@ for (const N of [4, 64, 2048]) {
         }
         const out = new Float64Array(9);
         const n = api.bounds(s, CAP - 256, CAP - 1, out, M);
-        assert.equal(n, 256, 'A1 N=' + N + ': return value, expected 256, got ' + n);
-        assert.equal(out[8], 256, 'A1 N=' + N + ' control: out[8] (n) expected 256, got ' + out[8]);
-        assert.equal(out[2], 0, 'A1 N=' + N + ' control: out[2] (maxVol) expected 0, got ' + out[2]);
+        assert.equal(n, 256, 'A1 N=' + N + ' PRE=' + PRE + ': return value, expected 256, got ' + n);
+        assert.equal(out[8], 256, 'A1 N=' + N + ' PRE=' + PRE + ' control: out[8] (n) expected 256, got ' + out[8]);
+        assert.equal(out[2], 0, 'A1 N=' + N + ' PRE=' + PRE + ' control: out[2] (maxVol) expected 0, got ' + out[2]);
         assert.ok(Object.is(out[5], 0),
-            'A1 N=' + N + ': out[5] (sumVol over 256 zero-volume bars) expected exact +0, got ' + out[5]);
+            'A1 N=' + N + ' PRE=' + PRE + ': out[5] (sumVol over 256 zero-volume bars) expected exact +0, got ' + out[5]);
     });
 }

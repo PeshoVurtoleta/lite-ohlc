@@ -1,388 +1,207 @@
-// test/zerobox.test.mjs
+// test/zerobox.test.mjs -- A13 (PLAN-v2). DETERMINISTIC tier: allocation / GC counts, no timing.
+// Run: node --expose-gc --min-semi-space-size=4 --max-semi-space-size=4 --test test/zerobox.test.mjs
+// Expected values come from the spec (S9 / A13): <= 0.1 B/op per hot method, >= 16 B/op for the
+// control (a HeapNumber is 16 B on Node), maxMajor 0 / maxMinor 0 for the GcProfiler window.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import v8 from 'node:v8';
-import { PerformanceObserver } from 'node:perf_hooks';
 
-import {
-    createTimeSeries,
-    createViewport,
-    createTimeSeriesPool,
-    hitTestFrom,
-    BOUNDS_STRIDE,
-    BUCKET_STRIDE,
-    HIT_STRIDE
-} from '../Ohlc.js';
+import { measureOps, GcProfiler, assertNoGc } from '@zakkster/lite-gc-profiler';
+import { OhlcSeries } from '../Ohlc.js';
 
-function getNewSpaceUsed() {
-    const spaces = v8.getHeapSpaceStatistics();
-    const ns = spaces.find(s => s.space_name === 'new_space');
-    return ns ? ns.space_used_size : 0;
+const CAP = 65536;
+const EPOCH_BASE = 1700000000123.5; // fractional epoch ms: a non-Smi double on every V8
+const OPS = 1000000;      // zero lanes: the meter has ~10-25 KB fixed noise, so 1e6 ops keeps it < 0.03 B/op
+const CONTROL_OPS = 30000; // control: stays under one 4 MB semi-space even at 130 B/op, so no scavenge undercounts it
+const WARMUP = 200000;
+const BUDGET = 0.1;
+
+// Fail closed: the harness is meaningless without a pinned 4 MB semi-space and a gc() hook.
+function requireHarness() {
+    assert.equal(typeof globalThis.gc, 'function', 'run with node --expose-gc');
+    const a = process.execArgv.join(' ');
+    assert.ok(/--min-semi-space-size=4\b/.test(a) && /--max-semi-space-size=4\b/.test(a),
+        'run with --min-semi-space-size=4 --max-semi-space-size=4; execArgv=' + a);
 }
 
-let gcCount = 0;
-const gcObs = new PerformanceObserver((list) => {
-    gcCount += list.getEntries().length;
-});
-gcObs.observe({ entryTypes: ['gc'] });
+// 5-class megamorphic call sites: four TEXTUALLY DISTINCT dummies + the real series share ONE call
+// site each (5 different callee functions), so V8 cannot inline the callee and a boxed argument or
+// return really crosses a call boundary.
+class D1 {
+    appendBarFrom(b, o) { sink[0] = 10; } setLiveFrom(b, o) { sink[0] = 11; } setLive(t, o, h, l, c, v) { sink[0] = 12; }
+    lowerBoundFrom(b, o) { return 13; } upperBoundFrom(b, o) { return 14; }
+    boundsInto(i0, i1, out, off) { sink[0] = 15; } copyRangeInto(i0, i1, out, off) { sink[0] = 16; }
+    get version() { return 17; } get count() { return 18; }
+}
+class D2 {
+    appendBarFrom(b, o) { sink[0] = 20; } setLiveFrom(b, o) { sink[0] = 21; } setLive(t, o, h, l, c, v) { sink[0] = 22; }
+    lowerBoundFrom(b, o) { return 23; } upperBoundFrom(b, o) { return 24; }
+    boundsInto(i0, i1, out, off) { sink[0] = 25; } copyRangeInto(i0, i1, out, off) { sink[0] = 26; }
+    get version() { return 27; } get count() { return 28; }
+}
+class D3 {
+    appendBarFrom(b, o) { sink[0] = 30; } setLiveFrom(b, o) { sink[0] = 31; } setLive(t, o, h, l, c, v) { sink[0] = 32; }
+    lowerBoundFrom(b, o) { return 33; } upperBoundFrom(b, o) { return 34; }
+    boundsInto(i0, i1, out, off) { sink[0] = 35; } copyRangeInto(i0, i1, out, off) { sink[0] = 36; }
+    get version() { return 37; } get count() { return 38; }
+}
+class D4 {
+    appendBarFrom(b, o) { sink[0] = 40; } setLiveFrom(b, o) { sink[0] = 41; } setLive(t, o, h, l, c, v) { sink[0] = 42; }
+    lowerBoundFrom(b, o) { return 43; } upperBoundFrom(b, o) { return 44; }
+    boundsInto(i0, i1, out, off) { sink[0] = 45; } copyRangeInto(i0, i1, out, off) { sink[0] = 46; }
+    get version() { return 47; } get count() { return 48; }
+}
 
-function runWindow(fn, N = 20000) {
-    globalThis.gc?.();
-    const startGc = gcCount;
-    const b1 = getNewSpaceUsed();
-    for (let i = 0; i < N; i++) fn();
-    const b2 = getNewSpaceUsed();
-    const endGc = gcCount;
-    if (endGc !== startGc) {
-        // Scavenge occurred during window, retry
-        globalThis.gc?.();
-        const b1Retry = getNewSpaceUsed();
-        for (let i = 0; i < N; i++) fn();
-        const b2Retry = getNewSpaceUsed();
-        return b2Retry - b1Retry;
+function mAppend(t, b, o) { t.appendBarFrom(b, o); }
+function mSetLiveFrom(t, b, o) { t.setLiveFrom(b, o); }
+function mLower(t, b, o) { return t.lowerBoundFrom(b, o); }
+function mUpper(t, b, o) { return t.upperBoundFrom(b, o); }
+function mBounds(t, i0, i1, out, o) { t.boundsInto(i0, i1, out, o); }
+function mCopy(t, i0, i1, out, o) { t.copyRangeInto(i0, i1, out, o); }
+function mVersion(t) { return t.version; }
+function mCount(t) { return t.count; }
+function mSetLive(t, ti, o, h, l, c, v) { t.setLive(ti, o, h, l, c, v); }
+// H3: add decimateInto lanes here once B2a lands (both paths, A13).
+
+// Candle layout [t,o,h,l,c,v]; o,h,l,c,v fractional, valid (l <= o,c <= h).
+function makeSeries() {
+    const s = new OhlcSeries(CAP, 1000);
+    const b = new Float64Array([0, 10.5, 20.25, 5.75, 15.5, 100.5]);
+    for (let k = 0; k < CAP; k++) {
+        b[0] = EPOCH_BASE + k * 1000;
+        s.appendBarFrom(b, 0);
     }
-    return b2 - b1;
+    return s;
 }
 
-function measureNetBpo(fn, N = 20000) {
-    // Warmup JIT (window 0)
-    for (let i = 0; i < 20000; i++) fn();
+function targetsOf(s) { return [new D1(), new D2(), new D3(), new D4(), s]; }
 
-    // Baseline window
-    const baseline = runWindow(() => {}, N);
-
-    let minNetBpo = Infinity;
-    // Steady state: minimum over windows 1..3
-    for (let w = 0; w < 3; w++) {
-        const actual = runWindow(fn, N);
-        const netBpo = Math.max(0, (actual - baseline) / N);
-        if (netBpo < minNetBpo) minNetBpo = netBpo;
-    }
-    return minNetBpo;
+// Warm the closure OUTSIDE the meter, collect, then measure. A scavenge inside the window makes the
+// heap delta undercount (new space is reclaimed), so a lane also fails if the profiler saw any minor GC
+// in its window: a zero-alloc lane has none, an allocating lane has bytes > 0.1 or a scavenge.
+async function bytesPerOp(fn, ops = OPS) {
+    for (let i = 0; i < WARMUP; i++) fn(i);
+    globalThis.gc();
+    const prof = new GcProfiler().start();
+    const r = measureOps(fn, { ops });
+    await prof.settle();
+    const minor = prof.summary().gc.minor;
+    prof.stop();
+    assert.notEqual(r.source, 'none', 'meter has no memory signal');
+    assert.notEqual(r.bytesPerOp, null, 'bytesPerOp is null (bracket inverted?)');
+    return { bpo: r.bytesPerOp, minor };
 }
-
-class C1 { updateLatest() {} }
-class C2 { updateLatest() {} }
-class C3 { updateLatest() {} }
-class C4 { updateLatest() {} }
-
-function megamorphicUpdateLatest(target, t, o, h, l, c, v) {
-    target.updateLatest(t, o, h, l, c, v);
+function assertZero(name, m) {
+    assert.ok(m.bpo <= BUDGET && m.minor === 0, name + ' ' + m.bpo + ' B/op, ' + m.minor + ' scavenges in window');
 }
 
-class DummyFrom1 {
-    updateLatestFrom() {}
-    findClosestLogicalIndexFrom() { return 0; }
-    getVisibleRangeFrom() { return 0; }
-    computeBoundsFrom() { return 0; }
-    decimateFrom() { return 0; }
-    mapToScreenFrom() {}
-    mapToDomainFrom() {}
-    hitTestFrom() { return 0; }
-    resizeFrom() {}
-    fitPriceDomainFrom() {}
-    setDomainFrom() {}
-    centerOnTimeFrom() {}
-    zoomTimeFrom() {}
-    panFrom() {}
-}
-class DummyFrom2 extends DummyFrom1 {}
-class DummyFrom3 extends DummyFrom1 {}
-class DummyFrom4 extends DummyFrom1 {}
+const sink = new Int32Array(2); // ints only: version/count/bounds results are Smis
 
-function megaUpdateLatestFrom(target, buf, offset) {
-    target.updateLatestFrom(buf, offset);
-}
-function megaFindClosestLogicalIndexFrom(target, buf, offset) {
-    return target.findClosestLogicalIndexFrom(buf, offset);
-}
-function megaGetVisibleRangeFrom(target, buf, offset, out, outOff) {
-    return target.getVisibleRangeFrom(buf, offset, out, outOff);
-}
-function megaComputeBoundsFrom(target, buf, offset, out, outOff) {
-    return target.computeBoundsFrom(buf, offset, out, outOff);
-}
-function megaDecimateFrom(target, buf, offset, bc, out, outOff) {
-    return target.decimateFrom(buf, offset, bc, out, outOff);
-}
-function megaMapToScreenFrom(target, inBuf, inOff, outBuf, outOff) {
-    return target.mapToScreenFrom(inBuf, inOff, outBuf, outOff);
-}
-function megaMapToDomainFrom(target, inBuf, inOff, outBuf, outOff) {
-    return target.mapToDomainFrom(inBuf, inOff, outBuf, outOff);
-}
-function megaHitTestFrom(target, vp, inBuf, inOff, outBuf, outOff) {
-    return target.hitTestFrom(vp, inBuf, inOff, outBuf, outOff);
-}
-function megaResizeFrom(target, buf, offset) {
-    return target.resizeFrom(buf, offset);
-}
-function megaFitPriceDomainFrom(target, buf, offset) {
-    return target.fitPriceDomainFrom(buf, offset);
-}
-function megaSetDomainFrom(target, buf, offset) {
-    return target.setDomainFrom(buf, offset);
-}
-function megaCenterOnTimeFrom(target, buf, offset) {
-    return target.centerOnTimeFrom(buf, offset);
-}
-function megaZoomTimeFrom(target, buf, offset) {
-    return target.zoomTimeFrom(buf, offset);
-}
-function megaPanFrom(target, buf, offset) {
-    return target.panFrom(buf, offset);
-}
-
-const EPOCH_BASE = 1700000000123.5;
-
-test('zerobox: control plain method shows box on fractional input', (t) => {
-    if (typeof globalThis.gc !== 'function') {
-        t.skip('Requires node --expose-gc');
-        return;
-    }
-    const ts = createTimeSeries({ capacity: 1024 });
-    ts.append(EPOCH_BASE, 10.5, 20.25, 5.75, 15.5, 100.5);
-    const targets = [new C1(), new C2(), new C3(), new C4(), ts];
-
-    let counter = 0;
-    // Megamorphic warmup across 5 classes to defeat callsite inlining
-    for (let i = 0; i < 20000; i++) {
-        const p = 12.5 + ((counter++) & 7) * 0.125;
-        megamorphicUpdateLatest(targets[i % 5], EPOCH_BASE, p, p + 10, p - 5, p, 200);
-    }
-
-    const boxedBpo = measureNetBpo(() => {
-        const p = 12.5 + ((counter++) & 7) * 0.125;
-        megamorphicUpdateLatest(targets[counter % 5], EPOCH_BASE, p, p + 10, p - 5, p, 200);
-    });
-
-    // Plain method across non-inlined call boundary boxes >= 16 B/op
-    assert.ok(boxedBpo >= 16.0, `Control plain method must show boxing (>= 16 B/op), measured: ${boxedBpo}`);
+test('zerobox: control -- scalar setLive with fractional args boxes >= 16 B/op', async () => {
+    requireHarness();
+    const targets = targetsOf(makeSeries());
+    const m = await bytesPerOp((i) => {
+        const p = 12.5 + (i & 7) * 0.125;
+        mSetLive(targets[i % 5], EPOCH_BASE + CAP * 1000 + 0.5, p, p + 10, p - 5, p, 200.25);
+    }, CONTROL_OPS);
+    assert.ok(m.bpo >= 16, 'meter must see the box; measured ' + m.bpo + ' B/op');
 });
 
-test('zerobox: updateLatestFrom is 0 B/op (megamorphic callsite + fractional epoch input)', () => {
-    const ts = createTimeSeries({ capacity: 1024 });
-    ts.append(EPOCH_BASE, 10.5, 20.25, 5.75, 15.5, 100.5);
-    const inBuf = new Float64Array([EPOCH_BASE, 12.375, 22.875, 6.125, 18.625, 200.5]);
-    const targets = [new DummyFrom1(), new DummyFrom2(), new DummyFrom3(), new DummyFrom4(), ts];
-
-    let counter = 0;
-    for (let i = 0; i < 20000; i++) {
-        megaUpdateLatestFrom(targets[i % 5], inBuf, 0);
-    }
-
-    const netBpo = measureNetBpo(() => {
-        megaUpdateLatestFrom(targets[(counter++) % 5], inBuf, 0);
-    });
-    assert.ok(netBpo < 0.1, `updateLatestFrom must be 0 B/op (noise floor < 0.1), measured: ${netBpo}`);
+test('zerobox: appendBarFrom is <= 0.1 B/op (5-class site, fractional epoch)', async () => {
+    requireHarness();
+    const targets = targetsOf(makeSeries());
+    const b = new Float64Array([EPOCH_BASE + CAP * 1000, 10.5, 20.25, 5.75, 15.5, 100.5]);
+    const bpo = await bytesPerOp((i) => { b[0] += 1000; mAppend(targets[i % 5], b, 0); });
+    assertZero('appendBarFrom', bpo);
 });
 
-test('zerobox: findClosestLogicalIndexFrom is 0 B/op (megamorphic callsite + fractional epoch input)', () => {
-    const ts = createTimeSeries({ capacity: 1024 });
-    for (let i = 0; i < 500; i++) {
-        ts.append(EPOCH_BASE + i * 10.5, 10.25, 20.75, 5.5, 15.25, 100);
-    }
-    const queryBuf = new Float64Array([EPOCH_BASE + 2500.625]);
-    const targets = [new DummyFrom1(), new DummyFrom2(), new DummyFrom3(), new DummyFrom4(), ts];
-
-    let counter = 0;
-    for (let i = 0; i < 20000; i++) {
-        megaFindClosestLogicalIndexFrom(targets[i % 5], queryBuf, 0);
-    }
-
-    const netBpo = measureNetBpo(() => {
-        megaFindClosestLogicalIndexFrom(targets[(counter++) % 5], queryBuf, 0);
-    });
-    assert.ok(netBpo < 0.1, `findClosestLogicalIndexFrom must be 0 B/op, measured: ${netBpo}`);
+test('zerobox: setLiveFrom is <= 0.1 B/op (5-class site, fractional values)', async () => {
+    requireHarness();
+    const targets = targetsOf(makeSeries());
+    const b = new Float64Array(8); // offset 2 exercises the off argument
+    b[2] = EPOCH_BASE + CAP * 1000; b[3] = 10.5; b[4] = 20.25; b[5] = 5.75; b[6] = 15.5; b[7] = 100.5;
+    const bpo = await bytesPerOp((i) => { b[6] = 15.5 + (i & 3) * 0.25; mSetLiveFrom(targets[i % 5], b, 2); });
+    assertZero('setLiveFrom', bpo);
 });
 
-test('zerobox: getVisibleRangeFrom is 0 B/op (megamorphic callsite + fractional epoch input)', () => {
-    const ts = createTimeSeries({ capacity: 1024 });
-    for (let i = 0; i < 500; i++) {
-        ts.append(EPOCH_BASE + i * 10.5, 10.25, 20.75, 5.5, 15.25, 100);
-    }
-    const rangeBuf = new Float64Array([EPOCH_BASE + 1500.125, EPOCH_BASE + 3500.875]);
-    const outInt32 = new Int32Array(3);
-    const targets = [new DummyFrom1(), new DummyFrom2(), new DummyFrom3(), new DummyFrom4(), ts];
-
-    let counter = 0;
-    for (let i = 0; i < 20000; i++) {
-        megaGetVisibleRangeFrom(targets[i % 5], rangeBuf, 0, outInt32, 0);
-    }
-
-    const netBpo = measureNetBpo(() => {
-        megaGetVisibleRangeFrom(targets[(counter++) % 5], rangeBuf, 0, outInt32, 0);
+test('zerobox: lowerBoundFrom and upperBoundFrom are <= 0.1 B/op (fractional epoch query)', async () => {
+    requireHarness();
+    const targets = targetsOf(makeSeries());
+    const q = new Float64Array(1);
+    const lo = await bytesPerOp((i) => {
+        q[0] = EPOCH_BASE + ((i * 31) & (CAP - 1)) * 1000 + 0.25;
+        sink[0] = mLower(targets[i % 5], q, 0);
     });
-    assert.ok(netBpo < 0.1, `getVisibleRangeFrom must be 0 B/op, measured: ${netBpo}`);
+    assertZero('lowerBoundFrom', lo);
+    const up = await bytesPerOp((i) => {
+        q[0] = EPOCH_BASE + ((i * 31) & (CAP - 1)) * 1000 + 0.25;
+        sink[0] = mUpper(targets[i % 5], q, 0);
+    });
+    assertZero('upperBoundFrom', up);
 });
 
-test('zerobox: computeBoundsFrom is 0 B/op (megamorphic callsite + fractional epoch input)', () => {
-    const ts = createTimeSeries({ capacity: 1024 });
-    for (let i = 0; i < 500; i++) {
-        ts.append(EPOCH_BASE + i * 10.5, 10.25, 20.75, 5.5, 15.25, 100);
-    }
-    const rangeBuf = new Float64Array([EPOCH_BASE + 1500.125, EPOCH_BASE + 3500.875]);
-    const outBounds = new Float64Array(BOUNDS_STRIDE);
-    const targets = [new DummyFrom1(), new DummyFrom2(), new DummyFrom3(), new DummyFrom4(), ts];
-
-    let counter = 0;
-    for (let i = 0; i < 20000; i++) {
-        megaComputeBoundsFrom(targets[i % 5], rangeBuf, 0, outBounds, 0);
-    }
-
-    const netBpo = measureNetBpo(() => {
-        megaComputeBoundsFrom(targets[(counter++) % 5], rangeBuf, 0, outBounds, 0);
+test('zerobox: boundsInto is <= 0.1 B/op (stride-9 output; wrapped ring + live bar)', async () => {
+    requireHarness();
+    const s = makeSeries();
+    const b = new Float64Array([EPOCH_BASE + CAP * 1000, 10.5, 20.25, 5.75, 15.5, 100.5]);
+    for (let k = 0; k < 777; k++) { s.appendBarFrom(b, 0); b[0] += 1000; } // base moves: ranges wrap
+    s.setLiveFrom(b, 0); // ranges ending at count-1 take the O(1) live fold
+    const targets = targetsOf(s);
+    const out = new Float64Array(9);
+    const last = CAP - 1;
+    const bpo = await bytesPerOp((i) => {
+        const i0 = (i * 31) & 16383;
+        if ((i & 1) === 0) mBounds(targets[i % 5], i0, i0 + 1000, out, 0);
+        else mBounds(targets[i % 5], last - 1000 - i0, last, out, 0);
     });
-    assert.ok(netBpo < 0.1, `computeBoundsFrom must be 0 B/op, measured: ${netBpo}`);
+    assertZero('boundsInto', bpo);
+    assert.ok(s.hasLive && s.count === CAP, 'lane covers the live fold');
 });
 
-test('zerobox: decimateFrom is 0 B/op (megamorphic callsite + fractional epoch input)', () => {
-    const ts = createTimeSeries({ capacity: 1024 });
-    for (let i = 0; i < 500; i++) {
-        ts.append(EPOCH_BASE + i * 10.5, 10.25, 20.75, 5.5, 15.25, 100);
-    }
-    const rangeBuf = new Float64Array([EPOCH_BASE + 1500.125, EPOCH_BASE + 3500.875]);
-    const outBuckets = new Float64Array(4 * BUCKET_STRIDE);
-    const targets = [new DummyFrom1(), new DummyFrom2(), new DummyFrom3(), new DummyFrom4(), ts];
-
-    let counter = 0;
-    for (let i = 0; i < 20000; i++) {
-        megaDecimateFrom(targets[i % 5], rangeBuf, 0, 4, outBuckets, 0);
-    }
-
-    const netBpo = measureNetBpo(() => {
-        megaDecimateFrom(targets[(counter++) % 5], rangeBuf, 0, 4, outBuckets, 0);
+test('zerobox: copyRangeInto is <= 0.1 B/op (stride-6 output)', async () => {
+    requireHarness();
+    const targets = targetsOf(makeSeries());
+    const out = new Float64Array(256 * 6);
+    const bpo = await bytesPerOp((i) => {
+        const i0 = (i * 31) & 16383;
+        mCopy(targets[i % 5], i0, i0 + 255, out, 0);
     });
-    assert.ok(netBpo < 0.1, `decimateFrom must be 0 B/op, measured: ${netBpo}`);
+    assertZero('copyRangeInto', bpo);
 });
 
-test('zerobox: mapToScreenFrom and mapToDomainFrom are 0 B/op (megamorphic callsite + fractional input)', () => {
-    const vp = createViewport({
-        width: 800,
-        height: 400,
-        minTime: EPOCH_BASE,
-        maxTime: EPOCH_BASE + 5000,
-        minPrice: 10.25,
-        maxPrice: 100.75
-    });
-    const inPt = new Float64Array([EPOCH_BASE + 2500.5, 50.125]);
-    const outPt = new Float64Array(2);
-    const targets = [new DummyFrom1(), new DummyFrom2(), new DummyFrom3(), new DummyFrom4(), vp];
-
-    let counter = 0;
-    for (let i = 0; i < 20000; i++) {
-        megaMapToScreenFrom(targets[i % 5], inPt, 0, outPt, 0);
-    }
-
-    const bpoScreen = measureNetBpo(() => {
-        megaMapToScreenFrom(targets[(counter++) % 5], inPt, 0, outPt, 0);
-    });
-    assert.ok(bpoScreen < 0.1, `mapToScreenFrom must be 0 B/op, measured: ${bpoScreen}`);
-
-    for (let i = 0; i < 20000; i++) {
-        megaMapToDomainFrom(targets[i % 5], inPt, 0, outPt, 0);
-    }
-
-    const bpoDomain = measureNetBpo(() => {
-        megaMapToDomainFrom(targets[(counter++) % 5], inPt, 0, outPt, 0);
-    });
-    assert.ok(bpoDomain < 0.1, `mapToDomainFrom must be 0 B/op, measured: ${bpoDomain}`);
+test('zerobox: version and count getters are <= 0.1 B/op', async () => {
+    requireHarness();
+    const targets = targetsOf(makeSeries());
+    const v = await bytesPerOp((i) => { sink[0] = mVersion(targets[i % 5]); });
+    assertZero('version', v);
+    const c = await bytesPerOp((i) => { sink[1] = mCount(targets[i % 5]); });
+    assertZero('count', c);
 });
 
-test('zerobox: hitTestFrom is 0 B/op (megamorphic callsite + fractional input)', () => {
-    const ts = createTimeSeries({ capacity: 1024 });
-    for (let i = 0; i < 500; i++) {
-        ts.append(EPOCH_BASE + i * 10.5, 10.25, 20.75, 5.5, 15.25, 100);
-    }
-    const vp = createViewport({
-        width: 800,
-        height: 400,
-        minTime: EPOCH_BASE,
-        maxTime: EPOCH_BASE + 6000,
-        minPrice: 0,
-        maxPrice: 50
-    });
-    const inHit = new Float64Array([400.5, 200.25, 20.5]);
-    const outHit = new Float64Array(HIT_STRIDE);
-    const targets = [new DummyFrom1(), new DummyFrom2(), new DummyFrom3(), new DummyFrom4(), ts];
+test('zerobox: GcProfiler window -- 1e6 setLiveFrom + 1e5 appendBarFrom + 1e5 boundsInto: 0 major, 0 minor', async () => {
+    requireHarness();
+    const s = makeSeries();
+    const targets = targetsOf(s);
+    const b = new Float64Array([EPOCH_BASE + CAP * 1000, 10.5, 20.25, 5.75, 15.5, 100.5]);
+    const out = new Float64Array(9);
 
-    let counter = 0;
-    for (let i = 0; i < 20000; i++) {
-        megaHitTestFrom(targets[i % 5], vp, inHit, 0, outHit, 0);
-    }
-
-    const netBpo = measureNetBpo(() => {
-        megaHitTestFrom(targets[(counter++) % 5], vp, inHit, 0, outHit, 0);
-    });
-    assert.ok(netBpo < 0.1, `hitTestFrom must be 0 B/op, measured: ${netBpo}`);
-});
-
-test('zerobox: viewport mutators *From are 0 B/op (megamorphic callsite + fractional input)', () => {
-    const vp = createViewport({
-        width: 800,
-        height: 400,
-        minTime: EPOCH_BASE,
-        maxTime: EPOCH_BASE + 5000,
-        minPrice: 10,
-        maxPrice: 100
-    });
-    const resizeBuf = new Float64Array([1024.5, 768.5]);
-    const fitPriceBuf = new Float64Array([15.25, 85.75, 0.1]);
-    const setDomainBuf = new Float64Array([EPOCH_BASE + 100.5, EPOCH_BASE + 4000.5, 20.25, 90.75]);
-    const centerBuf = new Float64Array([EPOCH_BASE + 2000.5, 1000.25]);
-    const zoomBuf = new Float64Array([1.5, EPOCH_BASE + 2000.5]);
-    const panBuf = new Float64Array([10.5, 2.5]);
-
-    const targets = [new DummyFrom1(), new DummyFrom2(), new DummyFrom3(), new DummyFrom4(), vp];
-
-    let counter = 0;
-    const bpoResize = measureNetBpo(() => {
-        megaResizeFrom(targets[(counter++) % 5], resizeBuf, 0);
-    });
-    assert.ok(bpoResize < 0.1, `resizeFrom must be 0 B/op, measured: ${bpoResize}`);
-
-    const bpoFit = measureNetBpo(() => {
-        megaFitPriceDomainFrom(targets[(counter++) % 5], fitPriceBuf, 0);
-    });
-    assert.ok(bpoFit < 0.1, `fitPriceDomainFrom must be 0 B/op, measured: ${bpoFit}`);
-
-    const bpoSet = measureNetBpo(() => {
-        megaSetDomainFrom(targets[(counter++) % 5], setDomainBuf, 0);
-    });
-    assert.ok(bpoSet < 0.1, `setDomainFrom must be 0 B/op, measured: ${bpoSet}`);
-
-    const bpoCenter = measureNetBpo(() => {
-        megaCenterOnTimeFrom(targets[(counter++) % 5], centerBuf, 0);
-    });
-    assert.ok(bpoCenter < 0.1, `centerOnTimeFrom must be 0 B/op, measured: ${bpoCenter}`);
-
-    const bpoZoom = measureNetBpo(() => {
-        megaZoomTimeFrom(targets[(counter++) % 5], zoomBuf, 0);
-    });
-    assert.ok(bpoZoom < 0.1, `zoomTimeFrom must be 0 B/op, measured: ${bpoZoom}`);
-
-    const bpoPan = measureNetBpo(() => {
-        megaPanFrom(targets[(counter++) % 5], panBuf, 0);
-    });
-    assert.ok(bpoPan < 0.1, `panFrom must be 0 B/op, measured: ${bpoPan}`);
-});
-
-test('zerobox: TimeSeriesPool acquire hit and version frame-skip lane is 0 B/op', () => {
-    const pool = createTimeSeriesPool({ maxSeries: 8, seriesCapacity: 64 });
-    const symbols = ['BTC', 'ETH', 'SOL', 'AVAX', 'BNB', 'ADA', 'XRP', 'DOGE'];
-    for (let i = 0; i < symbols.length; i++) {
-        pool.acquire(symbols[i]);
-    }
-
-    let counter = 0;
-    let lastVersion = -1;
-    let skipped = 0;
-    const bpoHit = measureNetBpo(() => {
-        const s = pool.acquire(symbols[(counter++) & 7]);
-        if (s.version === lastVersion) {
-            skipped++;
+    function run(nLive, nApp, nBounds) {
+        // ring is full (wrapped); appends move base; the live bar is open when the bounds loop runs
+        for (let i = 0; i < nApp; i++) { b[0] += 1000; mAppend(targets[4], b, 0); }
+        b[0] += 1000;
+        for (let i = 0; i < nLive; i++) { b[4] = 15.5 + (i & 3) * 0.25; mSetLiveFrom(targets[4], b, 0); }
+        for (let i = 0; i < nBounds; i++) {
+            const i0 = (i * 31) & 16383;
+            if ((i & 1) === 0) mBounds(targets[4], i0, i0 + 1000, out, 0);
+            else mBounds(targets[4], CAP - 2001 - i0, CAP - 1, out, 0); // ends at the live bar
         }
-    });
-    assert.ok(bpoHit < 0.1, `TimeSeriesPool acquire hit must be 0 B/op, measured: ${bpoHit}`);
-});
+    }
+    run(200000, 20000, 20000); // warmup, outside the window
+    globalThis.gc();
 
+    const gc = new GcProfiler().start();
+    run(1000000, 100000, 100000);
+    await gc.settle();
+    const summary = gc.summary();
+    gc.stop();
+    assertNoGc(summary, { maxMajor: 0, maxMinor: 0 });
+});
