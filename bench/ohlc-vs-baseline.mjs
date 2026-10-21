@@ -341,8 +341,10 @@ function liveJobs(L) {
 // --- cold: cross-check -----------------------------------------------------------
 
 let injectMismatch = false;
+let crossFail = ''; // first CROSS-CHECK FAIL reason: the selftest requires it to be the injected one
 
 function mismatch(what) {
+    if (crossFail === '') crossFail = what;
     console.error('CROSS-CHECK FAIL ' + what);
     return false;
 }
@@ -404,9 +406,11 @@ function crossGroup(g, counts) {
 /** Runs the same tick stream through every side, then compares count + the last 256 bars bitwise. */
 function crossLive(L, counts) {
     const T = 6000;
-    liteSetLive(L.lite.ring, L.lite.tab, L.lite.clk, L.lite.st, sink, T);
-    baseSetLiveIdx(L.idx.ring, L.idx.tab, L.idx.clk, L.idx.st, sink, T);
-    baseSetLivePush(L.push.ring, L.push.tab, L.push.clk, L.push.st, sink, T);
+    const J = liveJobs(L); // the same closures the timed path runs (built with no ctl job)
+    if (J[1].a !== J[0].a) return mismatch('setLive lite closure not shared');
+    J[0].a(T);
+    J[0].b(T);
+    J[1].b(T);
     const lite = L.lite.ring;
     const cnt = lite.count;
     const K = 256;
@@ -446,9 +450,14 @@ function crossJobs(jobs) {
 function crossAll() {
     const counts = { bounds: 0, decimate: 0, idiomatic: 0, boundsRows: 0, decimateRows: 0, live: 0 };
     for (const n of NS) {
-        const g = buildGroup(n, true);
-        if (!crossGroup(g, counts) || !crossJobs(groupJobs(g))) return null;
-        if (!crossLive(buildLive(n, false), counts)) return null;
+        try {
+            const g = buildGroup(n, true);
+            if (!crossGroup(g, counts) || !crossJobs(groupJobs(g))) return null;
+            if (!crossLive(buildLive(n, false), counts)) return null;
+        } catch (e) {
+            mismatch('exception ' + (e && e.stack ? e.stack : String(e))); // fails closed: a throw is a failed cross-check, never an uncaught crash
+            return null;
+        }
     }
     return counts;
 }
@@ -495,6 +504,7 @@ function sampleHost(where) {
 }
 
 function maxLoad() {
+    if (prov.loads.length === 0) return Infinity; // no load1 sample = unverified host: fails closed (verdict INCONCLUSIVE)
     let m = 0;
     for (const x of prov.loads) {
         if (!(x.load1 > 0)) return Infinity; // non-positive / NaN load1 = unverified host: fails closed (verdict INCONCLUSIVE)
@@ -506,7 +516,7 @@ function maxLoad() {
 // --- cold: timing -------------------------------------------------------------------
 
 const gcSum = { lite: { major: 0, minor: 0 }, base: { major: 0, minor: 0 } };
-let undrained = 0; // timed blocks whose prof.settle() did not report drained === true (A3 unverified)
+let undrained = 0; // timed blocks whose prof.settle() did not report drained === true or whose summary().gc.observed !== true (A3 unverified)
 
 function calibrate(run) {
     let ops = 1;
@@ -532,8 +542,8 @@ async function block(run, ops, acc) {
     run(ops);
     const t1 = performance.now();
     const d = await prof.settle();
-    if (!(d !== null && typeof d === 'object' && d.drained === true)) undrained++; // fails closed: no boolean drained = undrained
     const s = prof.summary();
+    if (!(d !== null && typeof d === 'object' && d.drained === true) || s.gc.observed !== true) undrained++; // fails closed: no drained === true or an unobserved GC channel = undrained
     prof.stop();
     acc.major += s.gc.major;
     acc.minor += s.gc.minor;
@@ -594,7 +604,7 @@ function writeResults(res, v, prelim) {
     L.push('- load1 samples: ' + prov.loads.map((x) => x.where + '=' + x.load1.toFixed(2)).join(', '));
     L.push('- max load1: ' + maxLoad().toFixed(2) + ' (bar ' + BAR.LOAD_MAX + ')');
     L.push('- other node processes >= ' + BAR.BUSY_PCPU + '% CPU: ' + (prov.hot.length ? prov.hot.join('; ') : 'none') + ' (excluded own pid + ancestors: ' + prov.excluded.join(', ') + ')');
-    L.push('- GC over timed lite blocks: major ' + gcSum.lite.major + ', minor ' + gcSum.lite.minor + ' (A3 requires 0 / 0: ' + (undrained > 0 ? 'A3 UNVERIFIED (' + undrained + ' windows did not drain)' : gcSum.lite.major + gcSum.lite.minor === 0 ? 'PASS' : 'FAIL') + ')');
+    L.push('- GC over timed lite blocks: major ' + gcSum.lite.major + ', minor ' + gcSum.lite.minor + ' (A3 requires 0 / 0: ' + (undrained > 0 ? 'A3 UNVERIFIED (' + undrained + ' windows did not drain or had no GC observer)' : gcSum.lite.major + gcSum.lite.minor === 0 ? 'PASS' : 'FAIL') + ')');
     L.push('- GC over timed baseline blocks (reported): major ' + gcSum.base.major + ', minor ' + gcSum.base.minor);
     L.push('- cross-check: ' + res.cross + '; probe exit ' + res.probeExit);
     L.push('');
@@ -755,7 +765,7 @@ async function main() {
     if (args[0] === '--selftest-mismatch') {
         injectMismatch = true;
         const c = crossAll();
-        if (c) { console.error('selftest-mismatch: the injected mismatch was NOT caught'); return 0; }
+        if (c || crossFail.indexOf('bounds n=' + NS[0] + ' w=' + WS[NS[0]][0] + ' start#0 ') !== 0) { console.error('selftest-mismatch: the injected mismatch was NOT the failure caught (' + (c ? 'cross-check passed' : crossFail) + ')'); return 0; }
         console.error('selftest-mismatch: injected mismatch caught -> exit 1');
         return 1;
     }

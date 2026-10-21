@@ -131,8 +131,8 @@ test('median is the lower median of a sorted copy; clears() does not mutate', ()
   const copy = r.slice();
   assert.equal(clears(r), true);
   assert.deepEqual(r, copy);
-  // guard against an upper/max pick:
-  // 20 values of 9 and one 100 -> median 9 -> no clear (a max/upper pick would clear).
+  // guard against a max pick:
+  // 20 values of 9 and one 100 -> median 9 -> no clear (a max pick would clear).
   const r2 = mk(9, 9); r2[20] = 100;
   assert.equal(clears(r2), false);
   const r3 = mk(10, 10); r3[0] = 1; r3[1] = 1; // 2 low, median still 10, min 1 -> fails on min
